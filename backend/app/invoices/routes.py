@@ -736,8 +736,17 @@ def invoice_from_order(
     inv.tax_amount = tax_amount
     inv.total = subtotal + tax_amount
     so.status = SalesOrderStatus.INVOICED
+    # Stock check for Sales allot — do not queue Supervisor for "pending_verify"
     if (so.ops_status or "") not in ("allocated", "dispatched", "ready", "shortage", "procuring"):
-        so.ops_status = "pending_verify"
+        from app.sales.ops import line_stock
+
+        stock_lines = line_stock(db, so.warehouse_id, so.lines)
+        if stock_lines and all(ln.ok for ln in stock_lines):
+            so.ops_status = "ready"
+            for ln in so.lines:
+                ln.outstanding_qty = Decimal("0")
+        else:
+            so.ops_status = "shortage"
     remarks = (body.remarks or "").strip() if body else ""
     if remarks:
         so.notes = f"{(so.notes or '').strip()}\n[Invoice] {remarks}".strip()

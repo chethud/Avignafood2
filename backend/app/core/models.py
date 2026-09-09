@@ -129,6 +129,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(30))
+    photo_url: Mapped[str | None] = mapped_column(String(255))
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -433,7 +434,8 @@ class SalesOrder(Base):
     ops_status: Mapped[str] = mapped_column(String(40), default="pending_approval")
     # pending_approval → Superadmin
     # awaiting_invoice → Accounts raises invoice
-    # pending_verify | shortage | procuring | ready → Supervisor
+    # ready | shortage | procuring → Sales (or Supervisor) stock / allot
+    # allocated | dispatched → logistics
     # allocated | dispatched → Logistics, then Accounts (payment)
 
     lines: Mapped[list["SalesOrderLine"]] = relationship(back_populates="sales_order", cascade="all, delete-orphan")

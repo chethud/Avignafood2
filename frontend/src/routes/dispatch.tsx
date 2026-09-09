@@ -1,6 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMe } from "@/lib/me-context";
-import { VehicleEditor } from "@/components/erp/VehicleBoard";
+import { VehicleGlance } from "@/components/erp/VehicleBoard";
 
 export const Route = createFileRoute("/dispatch")({
   head: () => ({
@@ -12,12 +12,15 @@ export const Route = createFileRoute("/dispatch")({
 function Dispatch() {
   const { me } = useMe();
   if (me?.user.role === "logistics") {
-    return <p className="text-sm text-muted-foreground">Book morning, afternoon or evening on Runs.</p>;
+    return <p className="text-sm text-muted-foreground">Your assigned drops are on Today / Runs after Sales or Supervisor books a truck for an order.</p>;
   }
   return (
     <div className="mx-auto max-w-md space-y-4">
       <h1 className="text-2xl font-semibold">Truck windows</h1>
-      <VehicleEditor />
+      <p className="text-sm text-muted-foreground">
+        Preview only. Book a truck from <Link to="/ops" className="font-medium text-primary">Order desk</Link> by assigning an invoiced order (date + morning/afternoon/evening + vehicle).
+      </p>
+      <VehicleGlance />
     </div>
   );
 }

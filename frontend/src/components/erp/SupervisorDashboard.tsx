@@ -48,7 +48,7 @@ export function SupervisorDashboard() {
     <>
       <PageHeader
         title={`${greeting()}, ${name}`}
-        subtitle="After Accounts raises the invoice: verify stock → procure if short → allot a driver. After delivery, Accounts collects payment."
+        subtitle="Order desk: confirm stock if short, then allot date + morning/afternoon/evening + vehicle. Sales can allot too — logistics only drives what you assign."
       />
 
       <div className="mb-4 flex gap-2">
@@ -76,9 +76,9 @@ export function SupervisorDashboard() {
         <>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi
-          label="To verify / allot"
+          label="To allot / stock"
           value={data ? String(data.pending_orders) : "—"}
-          meta="After Super Admin + invoice"
+          meta="Ready or shortage after invoice"
           tone={data && data.pending_orders > 0 ? "warn" : "good"}
         />
         <Kpi label="Invoiced" value={data ? String(data.confirmed_orders) : "—"} />
@@ -130,11 +130,11 @@ export function SupervisorDashboard() {
 
         <Panel title="Supervisor workflow">
           <p className="mb-4 text-sm text-muted-foreground">
-            After Accounts invoices: verify stock (2nd check) → raise PR if short → receive + batch → allot morning/afternoon/evening. Logistics only drives what you assign.
+            After Accounts invoices, stock is auto-checked. On Order desk pick date, Morning / Afternoon / Evening, and vehicle — same as Sales. Logistics then sees the assignment.
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
             <Link to="/ops" className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium hover:bg-primary/10">
-              Order desk →
+              Order desk — allot driver →
             </Link>
             <Link to="/inventory" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
               Warehouse & stock →

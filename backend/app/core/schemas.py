@@ -19,6 +19,7 @@ class UserOut(ORMModel):
     email: str
     full_name: str
     phone: str | None = None
+    photo_url: str | None = None
     organization_id: int
     role: str
     is_active: bool
@@ -576,6 +577,12 @@ class AllocateDispatchIn(BaseModel):
     on_date: date
     slot: str  # morning | afternoon | evening
     vehicle_id: int | None = None
+
+
+class ReassignVehicleIn(BaseModel):
+    """Change truck before logistics starts the run (planned / loading / loaded only)."""
+
+    vehicle_id: int
 
 
 class InvoiceLineAdjustIn(BaseModel):

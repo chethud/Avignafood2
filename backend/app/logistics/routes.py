@@ -124,23 +124,42 @@ def _latest_run(db: Session, org_id: int, statuses: tuple[str, ...], vehicle_id:
     )
     if vehicle_id:
         q = q.filter(LogisticsRun.vehicle_id == vehicle_id)
+    # For booked windows, prefer today's (or next) assignment so drivers see the allotted drop
+    if set(statuses) <= set(BOOKED_RUN):
+        today = date.today()
+        return (
+            q.filter(LogisticsRun.on_date >= today)
+            .order_by(LogisticsRun.on_date.asc(), LogisticsRun.id.asc())
+            .first()
+        ) or q.order_by(LogisticsRun.on_date.desc(), LogisticsRun.id.desc()).first()
     return q.order_by(LogisticsRun.dispatched_at.desc().nulls_last(), LogisticsRun.id.desc()).first()
 
 
 def _truck_payload(db: Session, org_id: int) -> dict:
-    veh = _first_vehicle(db, org_id)
+    # Prefer the run that is actually assigned (any vehicle), not always fleet vehicle #1
+    live_probe = _latest_run(db, org_id, LIVE_RUN)
+    back_probe = _latest_run(db, org_id, ("returning",))
+    booked_probe = _latest_run(db, org_id, BOOKED_RUN)
+    active = live_probe or back_probe or booked_probe
+    veh = None
+    if active and active.vehicle_id:
+        veh = db.query(Vehicle).filter(Vehicle.id == active.vehicle_id).first()
+    if not veh:
+        veh = _first_vehicle(db, org_id)
     live = _truck_state(veh.live_status if veh else "idle")
-    vid = veh.id if veh else None
     if live == "going":
-        run = _latest_run(db, org_id, LIVE_RUN, vid) or _latest_run(db, org_id, LIVE_RUN)
+        run = live_probe or _latest_run(db, org_id, LIVE_RUN, veh.id if veh else None)
     elif live == "coming_back":
-        run = _latest_run(db, org_id, ("returning",), vid) or _latest_run(db, org_id, ("returning",))
+        run = back_probe or _latest_run(db, org_id, ("returning",), veh.id if veh else None)
     else:
-        run = _latest_run(db, org_id, BOOKED_RUN, vid) or _latest_run(db, org_id, BOOKED_RUN)
+        run = booked_probe or _latest_run(db, org_id, BOOKED_RUN, veh.id if veh else None)
     if run and run.vehicle_id:
         v2 = db.query(Vehicle).filter(Vehicle.id == run.vehicle_id).first()
         if v2:
             veh = v2
+            # Sync idle truck display to the assigned vehicle's live flag when still planned
+            if live == "idle" and _truck_state(v2.live_status) != "idle":
+                live = _truck_state(v2.live_status)
     return {
         "status": live,
         "vehicle_id": veh.id if veh else None,
@@ -149,6 +168,8 @@ def _truck_payload(db: Session, org_id: int) -> dict:
         "driver_name": (run.driver_name if run else None) or (veh.driver_name if veh else None),
         "run_id": run.id if run else None,
         "run_number": run.number if run else None,
+        "on_date": run.on_date.isoformat() if run and run.on_date else None,
+        "slot": getattr(run, "slot", None) if run else None,
     }
 
 
@@ -427,6 +448,7 @@ def ready_orders(
 @router.get("/runs", response_model=list[LogisticsRunOut])
 def list_runs(
     on_date: date | None = Query(None),
+    open_only: bool = Query(False, description="Open assignments for drivers (any company in org)"),
     auth: AuthContext = Depends(require_perms("dispatch.view")),
     db: Session = Depends(get_db),
 ):
@@ -434,11 +456,16 @@ def list_runs(
     q = (
         db.query(LogisticsRun)
         .options(joinedload(LogisticsRun.stops))
-        .filter(LogisticsRun.company_id == company_id, LogisticsRun.organization_id == auth.organization_id)
+        .filter(LogisticsRun.organization_id == auth.organization_id)
     )
-    if on_date:
+    # Drivers need every allotted run in the org; Sales/Supervisor stay company-scoped
+    if auth.role != RoleName.LOGISTICS and not open_only:
+        q = q.filter(LogisticsRun.company_id == company_id)
+    if open_only:
+        q = q.filter(LogisticsRun.status.in_(OPEN_RUN + ("delivered",)))
+    elif on_date:
         q = q.filter(LogisticsRun.on_date == on_date)
-    rows = q.order_by(LogisticsRun.id.desc()).all()
+    rows = q.order_by(LogisticsRun.on_date.asc(), LogisticsRun.id.desc()).all()
     return [_run_out(db, r) for r in rows]
 
 
@@ -678,12 +705,15 @@ def set_truck(
     veh = _first_vehicle(db, auth.organization_id)
     if not veh:
         raise HTTPException(status_code=400, detail="No vehicle in the fleet")
+    # Prefer the allotted run (any vehicle), then fall back to fleet #1
+    booked = _latest_run(db, auth.organization_id, BOOKED_RUN)
+    live = _latest_run(db, auth.organization_id, LIVE_RUN)
+    returning = _latest_run(db, auth.organization_id, ("returning",))
+    if booked and booked.vehicle_id:
+        veh = db.query(Vehicle).filter(Vehicle.id == booked.vehicle_id).first() or veh
+    elif live and live.vehicle_id:
+        veh = db.query(Vehicle).filter(Vehicle.id == live.vehicle_id).first() or veh
     vid = veh.id
-    booked = _latest_run(db, auth.organization_id, BOOKED_RUN, vid) or _latest_run(db, auth.organization_id, BOOKED_RUN)
-    live = _latest_run(db, auth.organization_id, LIVE_RUN, vid) or _latest_run(db, auth.organization_id, LIVE_RUN)
-    returning = _latest_run(db, auth.organization_id, ("returning",), vid) or _latest_run(
-        db, auth.organization_id, ("returning",)
-    )
     if wanted == "going":
         if booked:
             _dispatch_run(db, booked)
@@ -696,7 +726,7 @@ def set_truck(
                     stop.status = "out_for_delivery"
             _set_vehicle_live(db, returning.vehicle_id or vid, "going")
         else:
-            raise HTTPException(status_code=400, detail="Book a window on Runs first, then tap Going.")
+            raise HTTPException(status_code=400, detail="No assigned run yet. Sales or Supervisor must allot a driver first.")
     elif wanted == "coming_back":
         run = live
         if not run:

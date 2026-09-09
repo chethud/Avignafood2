@@ -286,7 +286,7 @@ def supervisor_dashboard(
         .filter(
             SalesOrder.company_id == company_id,
             SalesOrder.status == SalesOrderStatus.INVOICED,
-            SalesOrder.ops_status.in_(["pending_verify", "shortage", "procuring", "ready"]),
+            SalesOrder.ops_status.in_(["shortage", "procuring", "ready"]),
         )
         .scalar()
     )

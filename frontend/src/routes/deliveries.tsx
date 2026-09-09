@@ -32,7 +32,7 @@ function Deliveries() {
 
   async function load() {
     try {
-      const rows = await api<LogisticsRun[]>("/api/v1/logistics/runs");
+      const rows = await api<LogisticsRun[]>("/api/v1/logistics/runs?open_only=true");
       setRuns(rows);
       setError("");
     } catch (e) {

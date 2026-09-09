@@ -6,6 +6,7 @@ export type Me = {
     email: string;
     full_name: string;
     phone?: string | null;
+    photo_url?: string | null;
     organization_id: number;
     role: string;
     company_ids: number[];

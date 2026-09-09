@@ -1,8 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { api } from "@/lib/api";
+import { api, getCompanyId } from "@/lib/api";
 import { Badge, PageHeader, Panel } from "@/components/erp/ui-bits";
-import { SLOTS, VehicleEditor, todayIso, type SlotKey, type VehicleAvail } from "@/components/erp/VehicleBoard";
+import { SLOTS, VehicleGlance, todayIso, type SlotKey, type VehicleAvail } from "@/components/erp/VehicleBoard";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/ops")({
@@ -11,7 +11,7 @@ export const Route = createFileRoute("/ops")({
       { title: "Order desk · Avighna ERP" },
       {
         name: "description",
-        content: "Order desk: verify stock, raise purchase, receive batch, allot driver (Sales or Supervisor).",
+        content: "Assign truck date + morning/afternoon/evening only for an invoiced order.",
       },
     ],
   }),
@@ -49,15 +49,16 @@ type DeskOrder = {
   vehicle: string | null;
 };
 
-type Filter = "all" | "pending_verify" | "shortage" | "procuring" | "ready" | "allocated";
+type Filter = "all" | "ready" | "shortage" | "procuring" | "allocated";
+
+type AllotDraft = { date: string; slot: SlotKey; vehicleId: number | "" };
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "pending_verify", label: "Verify" },
+  { id: "ready", label: "Ready to book" },
   { id: "shortage", label: "Shortage" },
   { id: "procuring", label: "Procuring" },
-  { id: "ready", label: "Ready" },
-  { id: "allocated", label: "Assigned" },
+  { id: "allocated", label: "Booked" },
 ];
 
 function opsTone(status: string): "neutral" | "good" | "warn" | "bad" {
@@ -70,13 +71,13 @@ function opsTone(status: string): "neutral" | "good" | "warn" | "bad" {
 function opsLabel(status: string) {
   return (
     {
-      pending_verify: "Verify stock",
+      pending_verify: "Confirm stock",
       awaiting_invoice: "Waiting for invoice",
       pending_approval: "Waiting Super Admin",
       shortage: "Shortage",
       procuring: "Procuring",
-      ready: "Ready to assign",
-      allocated: "Assigned to logistics",
+      ready: "Ready — book truck",
+      allocated: "Truck booked",
       dispatched: "Going",
     }[status] || status
   );
@@ -92,15 +93,40 @@ function OrderDesk() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [fleet, setFleet] = useState<VehicleAvail[]>([]);
-  const [slotDate, setSlotDate] = useState(todayIso());
-  const [slot, setSlot] = useState<SlotKey>("morning");
-  const [vehicleId, setVehicleId] = useState<number | "">("");
+  const [glanceDate, setGlanceDate] = useState(todayIso());
+  const [drafts, setDrafts] = useState<Record<number, AllotDraft>>({});
   const [maker, setMaker] = useState("");
   const [prNotes, setPrNotes] = useState("");
   const [batch, setBatch] = useState("");
   const [receiveMaker, setReceiveMaker] = useState("");
 
+  function draftFor(so: DeskOrder): AllotDraft {
+    return (
+      drafts[so.id] || {
+        date: so.slot_date || todayIso(),
+        slot: (so.slot as SlotKey) || "morning",
+        vehicleId: fleet[0]?.vehicle_id ?? "",
+      }
+    );
+  }
+
+  function patchDraft(soId: number, patch: Partial<AllotDraft>) {
+    setDrafts((prev) => {
+      const base = prev[soId] || {
+        date: todayIso(),
+        slot: "morning" as SlotKey,
+        vehicleId: fleet[0]?.vehicle_id ?? ("" as const),
+      };
+      return { ...prev, [soId]: { ...base, ...patch } };
+    });
+  }
+
   async function loadDesk() {
+    if (!getCompanyId()) {
+      setError("Pick a company first (top bar), then open Order desk again.");
+      setRows([]);
+      return;
+    }
     try {
       const data = await api<DeskOrder[]>("/api/v1/sales-orders/desk");
       setRows(data);
@@ -114,12 +140,10 @@ function OrderDesk() {
     try {
       const all = await api<VehicleAvail[]>(`/api/v1/vehicles/availability/all?on_date=${onDate}`);
       setFleet(all);
-      if (all.length && vehicleId === "") setVehicleId(all[0].vehicle_id);
     } catch {
       try {
         const one = await api<VehicleAvail>(`/api/v1/vehicles/availability?on_date=${onDate}`);
         setFleet([one]);
-        if (vehicleId === "") setVehicleId(one.vehicle_id);
       } catch {
         setFleet([]);
       }
@@ -131,22 +155,25 @@ function OrderDesk() {
   }, []);
 
   useEffect(() => {
-    void loadFleet(slotDate);
-  }, [slotDate]);
+    void loadFleet(glanceDate);
+  }, [glanceDate]);
 
   const visible = useMemo(() => {
     if (filter === "all") {
-      return rows.filter(
-        (r) => !["dispatched", "pending_approval", "awaiting_invoice"].includes(r.ops_status),
+      return rows.filter((r) =>
+        ["ready", "shortage", "procuring", "allocated", "pending_verify"].includes(r.ops_status),
       );
     }
     if (filter === "allocated") return rows.filter((r) => r.ops_status === "allocated" || r.ops_status === "dispatched");
+    if (filter === "ready") return rows.filter((r) => r.ops_status === "ready" || r.ops_status === "pending_verify");
     return rows.filter((r) => r.ops_status === filter);
   }, [rows, filter]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const r of rows) c[r.ops_status] = (c[r.ops_status] || 0) + 1;
+    c.ready = (c.ready || 0) + (c.pending_verify || 0);
+    c.allocated = (c.allocated || 0) + (c.dispatched || 0);
     return c;
   }, [rows]);
 
@@ -156,7 +183,7 @@ function OrderDesk() {
     try {
       await fn();
       await loadDesk();
-      await loadFleet(slotDate);
+      await loadFleet(glanceDate);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Action failed");
     } finally {
@@ -164,35 +191,22 @@ function OrderDesk() {
     }
   }
 
-  const selectedVehicle = fleet.find((v) => v.vehicle_id === vehicleId);
-  const slotFree = selectedVehicle ? selectedVehicle[slot] === "free" : false;
-
   return (
     <>
       <PageHeader
         title="Order desk"
-        subtitle="Invoiced sales orders. Confirm stock, then allot a driver (Sales or Supervisor). Logistics only drives what you assign."
+        subtitle="Book a truck only for an invoiced order: pick date + Morning/Afternoon/Evening + vehicle, then Assign. You cannot book an empty window."
       />
       {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
-      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start lg:gap-6">
-      <aside className="mb-4 lg:order-2 lg:mb-0 lg:sticky lg:top-20">
-        <Panel title="Fleet windows" hint="For logistics">
-          <p className="mb-3 text-xs text-muted-foreground">
-            Morning / afternoon / evening. Assign READY orders to a window. Logistics sees them on Today.
-          </p>
-          <VehicleEditor date={slotDate} onDateChange={setSlotDate} onUpdated={() => void loadFleet(slotDate)} />
-        </Panel>
-      </aside>
-      <div className="lg:order-1">
       <div className="mb-4 flex flex-wrap gap-2">
         {FILTERS.map((f) => {
           const n =
             f.id === "all"
-              ? rows.filter((r) => r.ops_status !== "dispatched").length
-              : f.id === "allocated"
-                ? (counts.allocated || 0) + (counts.dispatched || 0)
-                : counts[f.id] || 0;
+              ? rows.filter((r) =>
+                  ["ready", "shortage", "procuring", "allocated", "pending_verify"].includes(r.ops_status),
+                ).length
+              : counts[f.id] || 0;
           return (
             <button
               key={f.id}
@@ -210,272 +224,302 @@ function OrderDesk() {
         })}
       </div>
 
+      <Panel title="Fleet (read only)" hint="Windows book when you Assign an order" className="mb-4">
+        <VehicleGlance onDate={glanceDate} onDateChange={setGlanceDate} />
+        <p className="mt-2 text-xs text-muted-foreground">
+          Free / Booked here is only a preview. To book a truck, open a <strong>Ready</strong> order below.
+        </p>
+      </Panel>
+
       {!visible.length && (
         <Panel>
           <p className="text-sm text-muted-foreground">
-            No orders in this step. Accounts must raise the invoice first. Then Sales or Supervisor can confirm stock and allot a driver.
+            No orders ready to book. Flow: Sales creates order → Owner approves → Accounts raises invoice → order appears here as Ready (or Shortage). Then assign date + window + vehicle.
           </p>
+          <Link to="/sales" className="mt-3 inline-block text-sm font-medium text-primary">
+            Go to Sales orders →
+          </Link>
         </Panel>
       )}
 
       <div className="space-y-4">
-        {visible.map((so) => (
-          <Panel key={so.id} title={`SO-${so.id} · ${so.customer_name}`} hint={so.confirmed_at ? `Confirmed ${so.confirmed_at.slice(0, 10)}` : undefined}>
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <Badge tone={opsTone(so.ops_status)}>{opsLabel(so.ops_status)}</Badge>
-              {so.purchase_id && (
-                <Badge tone={so.purchase_status === "approved" || so.purchase_status === "received" ? "good" : "warn"}>
-                  PR-{so.purchase_id} · {so.purchase_status}
-                </Badge>
-              )}
-              {so.dispatch_id && (
-                <Badge tone="good">
-                  Dispatch #{so.dispatch_id}
-                  {so.slot ? ` · ${so.slot}` : ""}
-                  {so.vehicle ? ` · ${so.vehicle}` : ""}
-                </Badge>
-              )}
-            </div>
+        {visible.map((so) => {
+          const draft = draftFor(so);
+          const selected = fleet.find((v) => v.vehicle_id === draft.vehicleId);
+          const slotFree = selected ? selected[draft.slot] === "free" : false;
+          const canBook = so.ops_status === "ready" || so.ops_status === "pending_verify";
 
-            <div className="-mx-1 overflow-x-auto">
-              <table className="w-full min-w-[420px] text-sm">
-                <thead>
-                  <tr className="text-left text-[0.65rem] uppercase tracking-[0.1em] text-muted-foreground">
-                    <th className="pb-2 pr-3 font-medium">Product</th>
-                    <th className="pb-2 pr-3 font-medium">Need</th>
-                    <th className="pb-2 pr-3 font-medium">On hand</th>
-                    <th className="pb-2 pr-3 font-medium">Outstanding</th>
-                    <th className="pb-2 font-medium">Stock</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {so.lines.map((ln) => (
-                    <tr key={ln.product_id}>
-                      <td className="py-2 pr-3">{ln.product_name}</td>
-                      <td className="py-2 pr-3 tabular-nums">{kg(ln.quantity)}</td>
-                      <td className="py-2 pr-3 tabular-nums">{kg(ln.on_hand)}</td>
-                      <td className="py-2 pr-3 tabular-nums">{Number(ln.outstanding_qty) > 0 ? kg(ln.outstanding_qty) : "—"}</td>
-                      <td className="py-2">
-                        <Badge tone={ln.ok ? "good" : "bad"}>{ln.ok ? "Available" : "Short"}</Badge>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {so.ops_status === "pending_verify" && (
-              <div className="mt-4">
-                <p className="mb-2 text-xs text-muted-foreground">
-                  Second stock check — Accounts already raised the invoice. Confirm warehouse on-hand, then allot a driver.
-                </p>
-                <button
-                  type="button"
-                  disabled={busy === `v-${so.id}`}
-                  onClick={() => run(`v-${so.id}`, () => api(`/api/v1/sales-orders/${so.id}/verify-stock`, { method: "POST" }).then(() => undefined))}
-                  className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
-                >
-                  {busy === `v-${so.id}` ? "Verifying…" : "Verify stock"}
-                </button>
+          return (
+            <Panel
+              key={so.id}
+              title={`SO-${so.id} · ${so.customer_name}`}
+              hint={so.confirmed_at ? `Confirmed ${so.confirmed_at.slice(0, 10)}` : undefined}
+            >
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <Badge tone={opsTone(so.ops_status)}>{opsLabel(so.ops_status)}</Badge>
+                {so.dispatch_id && (
+                  <Badge tone="good">
+                    {so.slot_date || ""} {so.slot || ""} {so.vehicle ? `· ${so.vehicle}` : ""}
+                  </Badge>
+                )}
               </div>
-            )}
 
-            {so.ops_status === "shortage" && (
-              <div className="mt-4 space-y-3 rounded-xl border border-border bg-secondary/40 p-3">
-                <p className="text-sm text-muted-foreground">
-                  Less stock than ordered. Remaining qty is outstanding delivery until new stock arrives. Then complete remaining, or raise a purchase.
-                </p>
-                {so.lines.some((ln) => Number(ln.outstanding_qty) > 0) && (
+              <div className="-mx-1 overflow-x-auto">
+                <table className="w-full min-w-[420px] text-sm">
+                  <thead>
+                    <tr className="text-left text-[0.65rem] uppercase tracking-[0.1em] text-muted-foreground">
+                      <th className="pb-2 pr-3 font-medium">Product</th>
+                      <th className="pb-2 pr-3 font-medium">Need</th>
+                      <th className="pb-2 pr-3 font-medium">On hand</th>
+                      <th className="pb-2 font-medium">Stock</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {so.lines.map((ln) => (
+                      <tr key={ln.product_id}>
+                        <td className="py-2 pr-3">{ln.product_name}</td>
+                        <td className="py-2 pr-3 tabular-nums">{kg(ln.quantity)}</td>
+                        <td className="py-2 pr-3 tabular-nums">{kg(ln.on_hand)}</td>
+                        <td className="py-2">
+                          <Badge tone={ln.ok ? "good" : "bad"}>{ln.ok ? "OK" : "Short"}</Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {so.ops_status === "pending_verify" && (
+                <div className="mt-4">
                   <button
                     type="button"
-                    disabled={busy === `fo-${so.id}` || so.lines.some((ln) => Number(ln.outstanding_qty) > 0 && Number(ln.on_hand) < Number(ln.outstanding_qty))}
+                    disabled={busy === `v-${so.id}`}
                     onClick={() =>
-                      run(`fo-${so.id}`, () =>
-                        api(`/api/v1/sales-orders/${so.id}/fulfill-outstanding`, { method: "POST" }).then(() => undefined),
+                      run(`v-${so.id}`, () =>
+                        api(`/api/v1/sales-orders/${so.id}/verify-stock`, { method: "POST" }).then(() => undefined),
                       )
                     }
-                    className="rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium disabled:opacity-60"
+                    className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
                   >
-                    {busy === `fo-${so.id}` ? "Completing…" : "Complete remaining"}
+                    {busy === `v-${so.id}` ? "Confirming…" : "Confirm stock → Ready"}
                   </button>
-                )}
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <label className="text-xs text-muted-foreground">
-                    Manufacturer
-                    <input
-                      className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                      value={maker}
-                      onChange={(e) => setMaker(e.target.value)}
-                      placeholder="e.g. ABC Foods"
-                    />
-                  </label>
-                  <label className="text-xs text-muted-foreground">
-                    Notes
-                    <input
-                      className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                      value={prNotes}
-                      onChange={(e) => setPrNotes(e.target.value)}
-                      placeholder="Shortage for this SO"
-                    />
-                  </label>
                 </div>
-                <button
-                  type="button"
-                  disabled={busy === `pr-${so.id}`}
-                  onClick={() =>
-                    run(`pr-${so.id}`, () =>
-                      api(`/api/v1/sales-orders/${so.id}/raise-purchase`, {
-                        method: "POST",
-                        body: JSON.stringify({ manufacturer: maker || null, notes: prNotes || null }),
-                      }).then(() => undefined),
-                    )
-                  }
-                  className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
-                >
-                  {busy === `pr-${so.id}` ? "Raising…" : "Raise purchase requirement"}
-                </button>
-              </div>
-            )}
+              )}
 
-            {so.ops_status === "procuring" && (
-              <div className="mt-4 space-y-3 rounded-xl border border-border bg-secondary/40 p-3">
-                {so.purchase_status === "pending_approval" && (
-                  <p className="text-sm text-muted-foreground">Waiting for Super Admin / Owner to approve PR-{so.purchase_id}.</p>
-                )}
-                {so.purchase_status === "rejected" && (
-                  <p className="text-sm text-destructive">Purchase was declined. Raise a new requirement if still short.</p>
-                )}
-                {(so.purchase_status === "approved" || so.purchase_status === "Approved") && (
-                  <>
-                    <p className="text-sm text-muted-foreground">
-                      Approved. Receive material from manufacturer, then enter stock inward + batch.
+              {so.ops_status === "shortage" && (
+                <div className="mt-4 space-y-3 rounded-xl border border-border bg-secondary/40 p-3">
+                  <p className="text-sm text-muted-foreground">Stock short — raise purchase or complete remaining after inward. Then you can book a truck.</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="text-xs text-muted-foreground">
+                      Manufacturer
+                      <input
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={maker}
+                        onChange={(e) => setMaker(e.target.value)}
+                      />
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      Notes
+                      <input
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={prNotes}
+                        onChange={(e) => setPrNotes(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy === `pr-${so.id}`}
+                    onClick={() =>
+                      run(`pr-${so.id}`, () =>
+                        api(`/api/v1/sales-orders/${so.id}/raise-purchase`, {
+                          method: "POST",
+                          body: JSON.stringify({ manufacturer: maker || null, notes: prNotes || null }),
+                        }).then(() => undefined),
+                      )
+                    }
+                    className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+                  >
+                    {busy === `pr-${so.id}` ? "Raising…" : "Raise purchase"}
+                  </button>
+                </div>
+              )}
+
+              {so.ops_status === "procuring" && (
+                <div className="mt-4 space-y-3 rounded-xl border border-border bg-secondary/40 p-3">
+                  {so.purchase_status === "pending_approval" && (
+                    <p className="text-sm text-muted-foreground">Waiting Owner/Admin to approve PR-{so.purchase_id}.</p>
+                  )}
+                  {(so.purchase_status === "approved" || so.purchase_status === "Approved") && (
+                    <>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <label className="text-xs text-muted-foreground">
+                          Batch
+                          <input
+                            className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                            value={batch}
+                            onChange={(e) => setBatch(e.target.value)}
+                          />
+                        </label>
+                        <label className="text-xs text-muted-foreground">
+                          Manufacturer
+                          <input
+                            className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                            value={receiveMaker}
+                            onChange={(e) => setReceiveMaker(e.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busy === `rx-${so.id}` || !so.purchase_id}
+                        onClick={() =>
+                          run(`rx-${so.id}`, () =>
+                            api(`/api/v1/purchases/${so.purchase_id}/receive`, {
+                              method: "POST",
+                              body: JSON.stringify({
+                                batch: batch || null,
+                                manufacturer: receiveMaker || null,
+                                notes: `GRN SO-${so.id}`,
+                              }),
+                            }).then(() => undefined),
+                          )
+                        }
+                        className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+                      >
+                        {busy === `rx-${so.id}` ? "Receiving…" : "Receive + batch inward"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {canBook && so.ops_status === "ready" && (
+                <div className="mt-4 space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
+                  <p className="text-sm font-medium">Book truck for this order</p>
+                  <p className="text-xs text-muted-foreground">
+                    Choose date, window and vehicle. This is the only way to book a truck window.
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <label className="text-xs text-muted-foreground">
+                      Date
+                      <input
+                        type="date"
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={draft.date}
+                        onChange={(e) => {
+                          patchDraft(so.id, { date: e.target.value });
+                          void loadFleet(e.target.value);
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      Window
+                      <select
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={draft.slot}
+                        onChange={(e) => patchDraft(so.id, { slot: e.target.value as SlotKey })}
+                      >
+                        {SLOTS.map((s) => (
+                          <option key={s.key} value={s.key}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      Vehicle / driver
+                      <select
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={draft.vehicleId}
+                        onChange={(e) => patchDraft(so.id, { vehicleId: e.target.value ? Number(e.target.value) : "" })}
+                      >
+                        {!fleet.length && <option value="">No vehicles</option>}
+                        {fleet.map((v) => (
+                          <option key={v.vehicle_id} value={v.vehicle_id}>
+                            {v.name} · {v.plate}
+                            {v.driver_name ? ` · ${v.driver_name}` : ""} · {v[draft.slot]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {selected && (
+                    <p className="text-xs text-muted-foreground">
+                      {draft.slot} on {draft.date}:{" "}
+                      <span className={slotFree ? "text-success" : "text-destructive"}>
+                        {slotFree ? "free" : "already has drops"}
+                      </span>
+                      {!slotFree ? " — you can still add this order to the same window." : "."}
                     </p>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <label className="text-xs text-muted-foreground">
-                        Batch / lot
-                        <input
-                          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                          value={batch}
-                          onChange={(e) => setBatch(e.target.value)}
-                          placeholder="LOT-2408-A"
-                        />
-                      </label>
-                      <label className="text-xs text-muted-foreground">
-                        Manufacturer
-                        <input
-                          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                          value={receiveMaker}
-                          onChange={(e) => setReceiveMaker(e.target.value)}
-                          placeholder="As on GRN"
-                        />
-                      </label>
-                    </div>
+                  )}
+                  <button
+                    type="button"
+                    disabled={busy === `a-${so.id}` || !draft.vehicleId}
+                    onClick={() =>
+                      run(`a-${so.id}`, () =>
+                        api(`/api/v1/sales-orders/${so.id}/allocate`, {
+                          method: "POST",
+                          body: JSON.stringify({
+                            on_date: draft.date,
+                            slot: draft.slot,
+                            vehicle_id: draft.vehicleId || null,
+                          }),
+                        }).then(() => undefined),
+                      )
+                    }
+                    className="w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-60 sm:w-auto"
+                  >
+                    {busy === `a-${so.id}` ? "Booking…" : "Book truck + assign order"}
+                  </button>
+                </div>
+              )}
+
+              {so.ops_status === "allocated" && (
+                <div className="mt-3 space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Booked
+                    {so.slot_date ? ` ${so.slot_date}` : ""}
+                    {so.slot ? ` · ${so.slot}` : ""}
+                    {so.vehicle ? ` · ${so.vehicle}` : ""}. Logistics sees this on Today. Change vehicle only before Going.
+                  </p>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <label className="min-w-0 flex-1 text-xs text-muted-foreground">
+                      Change vehicle
+                      <select
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={draft.vehicleId}
+                        onChange={(e) => patchDraft(so.id, { vehicleId: e.target.value ? Number(e.target.value) : "" })}
+                      >
+                        {fleet.map((v) => (
+                          <option key={v.vehicle_id} value={v.vehicle_id}>
+                            {v.name} · {v.plate}
+                            {v.driver_name ? ` · ${v.driver_name}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <button
                       type="button"
-                      disabled={busy === `rx-${so.id}` || !so.purchase_id}
+                      disabled={busy === `r-${so.id}` || !draft.vehicleId}
                       onClick={() =>
-                        run(`rx-${so.id}`, () =>
-                          api(`/api/v1/purchases/${so.purchase_id}/receive`, {
+                        run(`r-${so.id}`, () =>
+                          api(`/api/v1/sales-orders/${so.id}/reassign-vehicle`, {
                             method: "POST",
-                            body: JSON.stringify({
-                              batch: batch || null,
-                              manufacturer: receiveMaker || null,
-                              notes: `GRN SO-${so.id}`,
-                            }),
+                            body: JSON.stringify({ vehicle_id: draft.vehicleId }),
                           }).then(() => undefined),
                         )
                       }
-                      className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+                      className="rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium disabled:opacity-60"
                     >
-                      {busy === `rx-${so.id}` ? "Receiving…" : "Receive + batch inward"}
+                      {busy === `r-${so.id}` ? "Updating…" : "Update vehicle"}
                     </button>
-                  </>
-                )}
-              </div>
-            )}
-
-            {so.ops_status === "ready" && (
-              <div className="mt-4 space-y-3 rounded-xl border border-border bg-secondary/40 p-3">
-                <p className="text-sm text-muted-foreground">
-                  Stock is ready. Assign this order to a window. Logistics cannot pick it themselves.
-                </p>
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <label className="text-xs text-muted-foreground">
-                    Date
-                    <input
-                      type="date"
-                      className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                      value={slotDate}
-                      onChange={(e) => setSlotDate(e.target.value)}
-                    />
-                  </label>
-                  <label className="text-xs text-muted-foreground">
-                    Window
-                    <select
-                      className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                      value={slot}
-                      onChange={(e) => setSlot(e.target.value as SlotKey)}
-                    >
-                      {SLOTS.map((s) => (
-                        <option key={s.key} value={s.key}>
-                          {s.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="text-xs text-muted-foreground">
-                    Vehicle
-                    <select
-                      className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                      value={vehicleId}
-                      onChange={(e) => setVehicleId(e.target.value ? Number(e.target.value) : "")}
-                    >
-                      {fleet.map((v) => (
-                        <option key={v.vehicle_id} value={v.vehicle_id}>
-                          {v.name} · {v.plate}
-                          {v.driver_name ? ` · ${v.driver_name}` : ""} · {v[slot]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  </div>
                 </div>
-                {selectedVehicle && (
-                  <p className="text-xs text-muted-foreground">
-                    {selectedVehicle.driver_name || "No driver listed"} · {slot} on {slotDate} is{" "}
-                    <span className={slotFree ? "text-success" : "text-destructive"}>{slotFree ? "free" : "already assigned"}</span>
-                    {!slotFree ? " — you can still add another drop to the same window." : "."}
-                  </p>
-                )}
-                <button
-                  type="button"
-                  disabled={busy === `a-${so.id}` || !vehicleId}
-                  onClick={() =>
-                    run(`a-${so.id}`, () =>
-                      api(`/api/v1/sales-orders/${so.id}/allocate`, {
-                        method: "POST",
-                        body: JSON.stringify({ on_date: slotDate, slot, vehicle_id: vehicleId || null }),
-                      }).then(() => undefined),
-                    )
-                  }
-                  className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
-                >
-                  {busy === `a-${so.id}` ? "Assigning…" : "Assign to logistics"}
-                </button>
-              </div>
-            )}
-
-            {(so.ops_status === "allocated" || so.ops_status === "dispatched") && (
-              <p className="mt-3 text-sm text-muted-foreground">
-                Assigned to logistics
-                {so.slot_date ? ` for ${so.slot_date}` : ""}
-                {so.slot ? ` ${so.slot}` : ""}
-                {so.vehicle ? ` · ${so.vehicle}` : ""}. Driver sees it on Today → Load & go.
-              </p>
-            )}
-          </Panel>
-        ))}
-      </div>
-      </div>
+              )}
+            </Panel>
+          );
+        })}
       </div>
     </>
   );

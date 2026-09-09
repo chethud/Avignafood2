@@ -5,7 +5,6 @@ import { useMe } from "@/lib/me-context";
 import { greeting, mapsHref, money, telHref } from "@/lib/format";
 import { firms } from "@/lib/erp-data";
 import { cn } from "@/lib/utils";
-import { todayIso } from "@/components/erp/VehicleBoard";
 import {
   FAIL_REASONS,
   WORK_STEPS,
@@ -135,7 +134,8 @@ export function LogisticsDashboard() {
     try {
       const [t, trips] = await Promise.all([
         api<TruckNow>("/api/v1/logistics/truck"),
-        api<LogisticsRun[]>(`/api/v1/logistics/runs?on_date=${todayIso()}`),
+        // Org-wide open assignments (not only today's date / current company)
+        api<LogisticsRun[]>("/api/v1/logistics/runs?open_only=true"),
       ]);
       setTruck(t);
       setRuns(trips);
@@ -160,7 +160,7 @@ export function LogisticsDashboard() {
   const current = todayStops.find((r) => ["pending", "out_for_delivery"].includes(r.stop.status));
   const nextLabel =
     phase === "book"
-      ? "Waiting for supervisor"
+      ? "Waiting for assignment"
       : phase === "leave"
         ? "Load & go"
         : phase === "deliver"
@@ -170,9 +170,9 @@ export function LogisticsDashboard() {
           : "Arrived at base";
   const nextHint =
     phase === "book"
-      ? "Supervisor assigns the order on Order desk. Then it appears here."
+      ? "Sales or Supervisor allots date, window and vehicle on Order desk. Then it appears here."
       : phase === "leave"
-        ? `${slotLabel(run?.slot)} assigned. Tap Load & go when the truck is loaded.`
+        ? `${slotLabel(run?.slot)}${run?.on_date ? ` · ${run.on_date}` : ""} assigned. Tap Load & go when the truck is loaded.`
         : phase === "deliver"
           ? "Deliver each customer in order. Last drop flips the truck to Coming back."
           : "Drive to base. Tap Arrived at base so Sales sees Idle.";
@@ -372,7 +372,7 @@ export function LogisticsDashboard() {
           </>
         ) : phase === "book" ? (
           <p className="mt-3 rounded-2xl border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-            No assignment yet. Supervisor opens Order desk and taps Assign to logistics.
+            No assignment yet. Sales or Supervisor opens Order desk, picks date + window + vehicle, then Assign.
           </p>
         ) : (
           <>
@@ -502,7 +502,7 @@ export function LogisticsDashboard() {
                     <div className="flex justify-between"><dt>Status</dt><dd className="capitalize">{invoice.status}</dd></div>
                   </dl>
                 ) : (
-                  <p className="mt-3 text-sm text-muted-foreground">Invoice is not on this drop yet. Accounts raises it before the supervisor allots you.</p>
+                  <p className="mt-3 text-sm text-muted-foreground">Invoice is not on this drop yet. Accounts raises it before Sales or Supervisor allots you.</p>
                 )}
                 <button type="button" className="mt-4 min-h-11 w-full rounded-xl border border-border text-sm" onClick={() => setStep("detail")}>
                   Back

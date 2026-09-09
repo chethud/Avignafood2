@@ -44,7 +44,7 @@ function orderStage(o: Order) {
   if (o.status === "cancelled") return "Declined";
   if (o.status === "draft" || o.ops_status === "pending_approval") return "Waiting Super Admin";
   if (o.status === "confirmed" || o.ops_status === "awaiting_invoice") return "Waiting invoice";
-  if (o.ops_status === "pending_verify") return "With supervisor";
+  if (o.ops_status === "pending_verify") return "Confirm stock";
   if (o.ops_status === "ready") return "Ready to allot";
   if (o.ops_status === "allocated") return "Driver allotted";
   if (o.ops_status === "dispatched") return o.logistics_status === "delivered" ? "Delivered" : "With driver";
@@ -100,7 +100,7 @@ function SalesWorkspace() {
 
   return (
     <>
-      <PageHeader title="Orders" subtitle="Create an order → Super Admin approves → Accounts invoices → you or Supervisor can allot the driver." />
+      <PageHeader title="Orders" subtitle="Create → Super Admin approves → Accounts invoices → you or Supervisor allot date/window/vehicle on Order desk." />
       <div className="mb-4 grid grid-cols-2 gap-2">
         <button
           type="button"

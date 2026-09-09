@@ -215,6 +215,7 @@ def _ensure_column(table: str, column: str, ddl: str) -> None:
 
 
 def _ensure_logo_column() -> None:
+    _ensure_column("users", "photo_url", "ALTER TABLE users ADD COLUMN photo_url VARCHAR(255)")
     _ensure_column("companies", "logo_url", "ALTER TABLE companies ADD COLUMN logo_url VARCHAR(255)")
     _ensure_column("leads", "voice_url", "ALTER TABLE leads ADD COLUMN voice_url VARCHAR(255)")
     _ensure_column("field_visits", "customer_id", "ALTER TABLE field_visits ADD COLUMN customer_id INTEGER")

@@ -75,6 +75,8 @@ export type TruckNow = {
   driver_name: string | null;
   run_id: number | null;
   run_number: string | null;
+  on_date?: string | null;
+  slot?: string | null;
 };
 
 export type WindowRow = {

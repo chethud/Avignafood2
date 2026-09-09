@@ -29,6 +29,7 @@ from app.core.schemas import (
     OrderDeskOut,
     OutstandingDeliveryOut,
     RaisePurchaseIn,
+    ReassignVehicleIn,
     SalesOrderCreate,
     SalesOrderOut,
 )
@@ -130,6 +131,43 @@ def list_outstanding_delivery(
 ):
     company_id = auth.require_company()
     return outstanding_rows(db, company_id=company_id, org_id=auth.organization_id)
+
+
+@router.get("/desk", response_model=list[OrderDeskOut])
+def order_desk(
+    auth: AuthContext = Depends(require_perms("sales.view")),
+    db: Session = Depends(get_db),
+):
+    """Order desk: invoiced orders for Sales / Supervisor to confirm stock and book a truck window."""
+    company_id = auth.require_company()
+    ensure_sales_schema(engine)
+    rows = (
+        db.query(SalesOrder)
+        .options(joinedload(SalesOrder.lines))
+        .filter(
+            SalesOrder.company_id == company_id,
+            SalesOrder.organization_id == auth.organization_id,
+            SalesOrder.status == SalesOrderStatus.INVOICED,
+        )
+        .order_by(SalesOrder.id.desc())
+        .all()
+    )
+    from app.sales.ops import line_stock
+
+    changed = False
+    for so in rows:
+        if (so.ops_status or "") == "pending_verify":
+            stock_lines = line_stock(db, so.warehouse_id, so.lines)
+            if stock_lines and all(ln.ok for ln in stock_lines):
+                so.ops_status = "ready"
+                for ln in so.lines:
+                    ln.outstanding_qty = Decimal("0")
+            else:
+                so.ops_status = "shortage"
+            changed = True
+    if changed:
+        db.commit()
+    return [desk_out(db, so) for so in rows]
 
 
 @router.post("", response_model=SalesOrderOut)
@@ -340,39 +378,17 @@ def _load_so(db: Session, company_id: int, org_id: int, order_id: int) -> SalesO
     return so
 
 
-@router.get("/desk", response_model=list[OrderDeskOut])
-def order_desk(
-    auth: AuthContext = Depends(require_perms("sales.view")),
-    db: Session = Depends(get_db),
-):
-    """Supervisor queue: invoiced orders after Accounts raises the bill. Super Admin approval is already done."""
-    company_id = auth.require_company()
-    ensure_sales_schema(engine)
-    rows = (
-        db.query(SalesOrder)
-        .options(joinedload(SalesOrder.lines))
-        .filter(
-            SalesOrder.company_id == company_id,
-            SalesOrder.organization_id == auth.organization_id,
-            SalesOrder.status == SalesOrderStatus.INVOICED,
-        )
-        .order_by(SalesOrder.id.desc())
-        .all()
-    )
-    return [desk_out(db, so) for so in rows]
-
-
 @router.post("/{order_id}/verify-stock", response_model=OrderDeskOut)
 def verify_stock(
     order_id: int,
     auth: AuthContext = Depends(require_perms("sales.edit")),
     db: Session = Depends(get_db),
 ):
-    """Second stock check — Supervisor confirms after Accounts has raised the invoice."""
+    """Sales (or Supervisor) confirms on-hand after Accounts invoice — not a Supervisor-only gate."""
     company_id = auth.require_company()
     so = _load_so(db, company_id, auth.organization_id, order_id)
     if so.status != SalesOrderStatus.INVOICED:
-        raise HTTPException(status_code=400, detail="Accounts must raise the invoice before supervisor confirm")
+        raise HTTPException(status_code=400, detail="Accounts must raise the invoice before stock confirm")
     lines = line_stock(db, so.warehouse_id, so.lines)
     so.ops_status = "ready" if all(ln.ok for ln in lines) else "shortage"
     if so.ops_status == "ready":
@@ -541,6 +557,91 @@ def allocate_dispatch(
         company_id=company_id,
         user_id=auth.user.id,
         detail=f"run={run.number} slot={body.slot} date={body.on_date}",
+    )
+    db.commit()
+    return desk_out(db, so)
+
+
+@router.post("/{order_id}/reassign-vehicle", response_model=OrderDeskOut)
+def reassign_vehicle(
+    order_id: int,
+    body: ReassignVehicleIn,
+    auth: AuthContext = Depends(require_perms("dispatch.create")),
+    db: Session = Depends(get_db),
+):
+    """Sales / Supervisor can switch truck before logistics starts (Going)."""
+    from app.core.models import LogisticsRun, LogisticsStop
+    from app.logistics.routes import BOOKED_RUN, _set_slot
+
+    company_id = auth.require_company()
+    so = _load_so(db, company_id, auth.organization_id, order_id)
+    if (so.ops_status or "") != "allocated":
+        raise HTTPException(status_code=400, detail="Order is not assigned to logistics yet")
+    if so.status != SalesOrderStatus.INVOICED:
+        raise HTTPException(status_code=400, detail="Only invoiced orders can change vehicle")
+
+    stop = (
+        db.query(LogisticsStop)
+        .join(LogisticsRun, LogisticsRun.id == LogisticsStop.run_id)
+        .filter(
+            LogisticsStop.sales_order_id == so.id,
+            LogisticsRun.status.in_(BOOKED_RUN),
+        )
+        .order_by(LogisticsStop.id.desc())
+        .first()
+    )
+    if not stop:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot change vehicle — driver already started this run",
+        )
+    run = db.query(LogisticsRun).filter(LogisticsRun.id == stop.run_id).first()
+    if not run or (run.status or "planned") not in BOOKED_RUN:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot change vehicle — driver already started this run",
+        )
+
+    veh = (
+        db.query(Vehicle)
+        .filter(
+            Vehicle.id == body.vehicle_id,
+            Vehicle.organization_id == auth.organization_id,
+            Vehicle.is_active.is_(True),
+        )
+        .first()
+    )
+    if not veh:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    old_vehicle_id = run.vehicle_id
+    slot = getattr(run, "slot", None) or "afternoon"
+    if old_vehicle_id and old_vehicle_id != veh.id:
+        _set_slot(db, old_vehicle_id, run.on_date, slot, "free")
+    run.vehicle_id = veh.id
+    run.driver_name = veh.driver_name or run.driver_name
+    _set_slot(db, veh.id, run.on_date, slot, "booked")
+
+    load = (
+        db.query(Dispatch)
+        .filter(Dispatch.sales_order_id == so.id)
+        .order_by(Dispatch.id.desc())
+        .first()
+    )
+    if load:
+        load.vehicle = veh.plate
+        load.transporter = run.driver_name
+
+    so.ops_status = "allocated"
+    write_audit(
+        db,
+        action="reassign_vehicle",
+        entity_type="sales_order",
+        entity_id=so.id,
+        organization_id=auth.organization_id,
+        company_id=company_id,
+        user_id=auth.user.id,
+        detail=f"run={run.number} vehicle={veh.plate}",
     )
     db.commit()
     return desk_out(db, so)

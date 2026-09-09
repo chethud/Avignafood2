@@ -26,6 +26,7 @@ def _out(user: User) -> UserOut:
         email=user.email,
         full_name=user.full_name,
         phone=user.phone,
+        photo_url=getattr(user, "photo_url", None),
         organization_id=user.organization_id,
         role=user.role.name.value,
         is_active=user.is_active,

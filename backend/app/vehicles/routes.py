@@ -146,6 +146,12 @@ def set_slot(
         raise HTTPException(status_code=400, detail="Slot must be morning, afternoon or evening")
     if body.status not in ("free", "booked"):
         raise HTTPException(status_code=400, detail="Status must be free or booked")
+    # Windows are booked only by assigning an invoiced order on Order desk
+    if body.status == "booked":
+        raise HTTPException(
+            status_code=400,
+            detail="Book a truck window from Order desk by assigning an order (date + morning/afternoon/evening + vehicle)",
+        )
     v = (
         db.query(Vehicle)
         .filter(Vehicle.id == vehicle_id, Vehicle.organization_id == auth.organization_id)

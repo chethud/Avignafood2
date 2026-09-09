@@ -9,12 +9,37 @@ import {
 import { cn } from "@/lib/utils";
 import { useCompany } from "@/lib/company-context";
 import { firms, firmName, quietAlerts, type FirmId } from "@/lib/erp-data";
-import { getToken } from "@/lib/api";
+import { getToken, mediaUrl } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { applyBrand } from "@/lib/brand";
 import { nameInitials } from "@/lib/format";
 import { ApprovalPopup, usePendingApprovals } from "@/components/erp/ApprovalPopup";
 import { Badge } from "@/components/erp/ui-bits";
+
+function ProfileAvatar({
+  name,
+  photoUrl,
+  className,
+  textClassName,
+}: {
+  name: string;
+  photoUrl?: string | null;
+  className?: string;
+  textClassName?: string;
+}) {
+  if (photoUrl) {
+    return (
+      <span className={cn("relative overflow-hidden rounded-full bg-primary", className)}>
+        <img src={mediaUrl(photoUrl)} alt="" className="size-full object-cover" />
+      </span>
+    );
+  }
+  return (
+    <span className={cn("flex items-center justify-center rounded-full bg-primary font-semibold text-primary-foreground", className, textClassName)}>
+      {nameInitials(name) || "U"}
+    </span>
+  );
+}
 
 function SidebarBrand({
   logo,
@@ -159,6 +184,7 @@ function SalesPhoneShell({
   pathname: string;
   children: ReactNode;
 }) {
+  const { me } = useMe();
   useEffect(() => {
     applyBrand("f1");
   }, []);
@@ -174,13 +200,15 @@ function SalesPhoneShell({
           to="/profile"
           aria-label="Profile"
           className={cn(
-            "flex size-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold",
-            pathname === "/profile"
-              ? "bg-primary text-primary-foreground ring-2 ring-primary/40"
-              : "bg-primary text-primary-foreground",
+            "block size-11 shrink-0 overflow-hidden rounded-full",
+            pathname === "/profile" && "ring-2 ring-primary/40",
           )}
         >
-          {nameInitials(meName) || "S"}
+          <ProfileAvatar
+            name={meName}
+            photoUrl={me?.user.photo_url}
+            className="size-11 text-sm"
+          />
         </Link>
       </header>
       <main className="mx-auto max-w-md px-4 py-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))]">{children}</main>
@@ -215,6 +243,7 @@ function LogisticsPhoneShell({
   pathname: string;
   children: ReactNode;
 }) {
+  const { me } = useMe();
   useEffect(() => {
     applyBrand("f1");
   }, []);
@@ -239,11 +268,15 @@ function LogisticsPhoneShell({
           to="/profile"
           aria-label="Profile"
           className={cn(
-            "flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground",
+            "block size-11 shrink-0 overflow-hidden rounded-full",
             pathname === "/profile" && "ring-2 ring-primary/40",
           )}
         >
-          {nameInitials(meName) || "L"}
+          <ProfileAvatar
+            name={meName}
+            photoUrl={me?.user.photo_url}
+            className="size-11 text-sm"
+          />
         </Link>
       </header>
       <main className="mx-auto max-w-md px-4 py-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))]">{children}</main>
@@ -487,9 +520,11 @@ export function AppShell({ children }: { children: ReactNode }) {
               : "text-sidebar-foreground hover:bg-sidebar-accent/60",
           )}
         >
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
-            {nameInitials(me?.user.full_name || "") || "A"}
-          </span>
+          <ProfileAvatar
+            name={me?.user.full_name || ""}
+            photoUrl={me?.user.photo_url}
+            className="size-8 shrink-0 text-xs"
+          />
           <span className="min-w-0">
             <span className="block truncate font-medium leading-snug text-foreground">{me?.user.full_name || "Profile"}</span>
             <span className="block truncate text-xs capitalize leading-snug text-muted-foreground">{roleLabel}</span>

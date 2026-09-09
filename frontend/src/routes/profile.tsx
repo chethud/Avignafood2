@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { X } from "lucide-react";
-import { api, clearAuth } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { Camera, X } from "lucide-react";
+import { api, clearAuth, mediaUrl } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { nameInitials } from "@/lib/format";
 
@@ -15,12 +15,15 @@ export const Route = createFileRoute("/profile")({
 function Profile() {
   const navigate = useNavigate();
   const { me, refresh } = useMe();
+  const fileRef = useRef<HTMLInputElement>(null);
   const name = me?.user.full_name || "User";
   const email = me?.user.email || "";
+  const photo = me?.user.photo_url || null;
   const [profileName, setProfileName] = useState("");
   const [phone, setPhone] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     setProfileName(me?.user.full_name || "");
@@ -49,16 +52,89 @@ function Profile() {
     }
   }
 
+  async function onPhotoFile(file: File | null) {
+    if (!file) return;
+    setError("");
+    setUploading(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      await api("/api/v1/auth/me/photo", { method: "POST", body });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not upload photo");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function removePhoto() {
+    setError("");
+    setUploading(true);
+    try {
+      await api("/api/v1/auth/me/photo", { method: "DELETE" });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not remove photo");
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-3">
-        <div className="flex size-14 shrink-0 items-center justify-center rounded-full bg-primary text-lg font-semibold text-primary-foreground">
-          {nameInitials(name) || "S"}
-        </div>
+        <button
+          type="button"
+          disabled={uploading}
+          aria-label="Change profile photo"
+          onClick={() => fileRef.current?.click()}
+          className="relative flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary text-lg font-semibold text-primary-foreground disabled:opacity-60"
+        >
+          {photo ? (
+            <img src={mediaUrl(photo)} alt="" className="size-full object-cover" />
+          ) : (
+            nameInitials(name) || "S"
+          )}
+          <span className="absolute inset-x-0 bottom-0 flex items-center justify-center bg-black/45 py-0.5">
+            <Camera className="size-3.5 text-white" />
+          </span>
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0] ?? null;
+            e.target.value = "";
+            void onPhotoFile(f);
+          }}
+        />
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold">{name}</p>
           {email ? <p className="truncate text-sm text-muted-foreground">{email}</p> : null}
           <p className="text-xs capitalize text-muted-foreground">{me?.user.role?.replaceAll("_", " ") || "User"}</p>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={() => fileRef.current?.click()}
+              className="text-xs font-medium text-primary disabled:opacity-60"
+            >
+              {uploading ? "Uploading…" : photo ? "Change photo" : "Add photo"}
+            </button>
+            {photo ? (
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => void removePhoto()}
+                className="text-xs font-medium text-muted-foreground disabled:opacity-60"
+              >
+                Remove
+              </button>
+            ) : null}
+          </div>
         </div>
         <button
           type="button"

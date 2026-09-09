@@ -132,6 +132,10 @@ export function VehicleEditor({
 
   async function setSlot(slot: SlotKey, status: SlotState) {
     if (!truck) return;
+    if (status === "booked") {
+      setError("Book a truck only from Order desk by assigning an order");
+      return;
+    }
     try {
       setTruck(
         await api<VehicleAvail>(`/api/v1/vehicles/${truck.vehicle_id}/slot`, {

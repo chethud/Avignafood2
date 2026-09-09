@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.audit.routes import router as audit_router
-from app.auth.routes import router as auth_router
+from app.auth.routes import router as auth_router, _ensure_user_photo_column
 from app.companies.routes import router as companies_router
 from app.core.config import settings
 from app.core.database import Base, engine
@@ -35,6 +35,7 @@ app = FastAPI(title="Avighnya Foods API", version="0.1.0")
 # ponytail: create missing tables without a migration tool
 Base.metadata.create_all(bind=engine)
 ensure_sales_schema(engine)
+_ensure_user_photo_column()
 # Postgres-only DDL (SERIAL / TIMESTAMP WITH TIME ZONE) — skip on local SQLite
 if engine.dialect.name == "postgresql":
     ensure_logistics_schema(engine)
