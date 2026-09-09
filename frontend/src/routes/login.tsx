@@ -1,8 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Eye, EyeOff } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { API_URL, setAuth, api } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { firms } from "@/lib/erp-data";
+import { applyDefaultFirmForRole } from "@/lib/company-context";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
@@ -13,6 +15,7 @@ function LoginPage() {
   const { refresh } = useMe();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -36,10 +39,12 @@ function LoginPage() {
       if (!session) throw new Error("Could not load your account");
       try {
         const companies = await api<{ id: number }[]>("/api/v1/companies");
+        // Keep a fallback company id for write screens; UI scope may still be All
         if (companies[0]) localStorage.setItem("companyId", String(companies[0].id));
       } catch {
         /* keep default */
       }
+      applyDefaultFirmForRole(session.user.role);
       navigate({ to: "/" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -73,15 +78,28 @@ function LoginPage() {
         </label>
         <label className="mb-6 block text-sm text-muted-foreground">
           Password
-          <input
-            className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            name="password"
-            autoComplete="current-password"
-            required
-          />
+          <span className="relative mt-1 block">
+            <input
+              className="w-full rounded-xl border border-border bg-background px-3 py-2 pr-10 font-sans text-sm outline-none focus:border-primary"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type={showPassword ? "text" : "password"}
+              name="password"
+              autoComplete="current-password"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              required
+            />
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              onClick={() => setShowPassword((v) => !v)}
+            >
+              {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            </button>
+          </span>
         </label>
         <button
           type="submit"

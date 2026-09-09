@@ -32,21 +32,17 @@ def list_payments(
     auth: AuthContext = Depends(require_perms("payments.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    rows = (
-        db.query(Payment)
-        .filter(Payment.company_id == company_id, Payment.organization_id == auth.organization_id)
-        .order_by(Payment.id.desc())
-        .all()
-    )
-    invs = {
-        i.id: i
-        for i in db.query(Invoice).filter(Invoice.company_id == company_id).all()
-    }
-    customers = {
-        c.id: c
-        for c in db.query(Customer).filter(Customer.company_id == company_id).all()
-    }
+    company_id = auth.company_or_all()
+    pay_q = db.query(Payment).filter(Payment.organization_id == auth.organization_id)
+    inv_q = db.query(Invoice).filter(Invoice.organization_id == auth.organization_id)
+    cust_q = db.query(Customer).filter(Customer.organization_id == auth.organization_id)
+    if company_id is not None:
+        pay_q = pay_q.filter(Payment.company_id == company_id)
+        inv_q = inv_q.filter(Invoice.company_id == company_id)
+        cust_q = cust_q.filter(Customer.company_id == company_id)
+    rows = pay_q.order_by(Payment.id.desc()).all()
+    invs = {i.id: i for i in inv_q.all()}
+    customers = {c.id: c for c in cust_q.all()}
     out: list[PaymentOut] = []
     for p in rows:
         inv = invs.get(p.invoice_id)

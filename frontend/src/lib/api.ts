@@ -24,6 +24,16 @@ export function getCompanyId(): string | null {
   return localStorage.getItem("companyId");
 }
 
+/** When firm scope is All companies, list APIs omit X-Company-Id (org-wide). */
+export function getFirmScopeRaw(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("firmScope");
+}
+
+export function isAllCompaniesScope(): boolean {
+  return getFirmScopeRaw() === "all";
+}
+
 const AUTH_EVENT = "avighna-auth";
 
 function notifyAuthChanged() {
@@ -46,6 +56,7 @@ export function setAuth(token: string, companyId?: number) {
 export function clearAuth() {
   localStorage.removeItem("token");
   localStorage.removeItem("companyId");
+  localStorage.removeItem("firmScope");
   notifyAuthChanged();
 }
 
@@ -64,7 +75,12 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
   const headers = new Headers(init.headers || {});
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const companyId = companyOverride != null ? String(companyOverride) : getCompanyId();
+  const companyId =
+    companyOverride != null
+      ? String(companyOverride)
+      : isAllCompaniesScope()
+        ? null
+        : getCompanyId();
   if (companyId) headers.set("X-Company-Id", companyId);
   if (init.body && !(init.body instanceof URLSearchParams) && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -92,7 +108,8 @@ export async function apiUpload(
   const headers = new Headers();
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const cid = companyId != null ? String(companyId) : getCompanyId();
+  const cid =
+    companyId != null ? String(companyId) : isAllCompaniesScope() ? null : getCompanyId();
   if (cid) headers.set("X-Company-Id", cid);
   const body = new FormData();
   body.append("file", file);

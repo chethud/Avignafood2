@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { money } from "@/lib/format";
 import { useCompany } from "@/lib/company-context";
 import { PAY_MODES, agingBucket, dueCountdown, payStatus, payStatusLabel } from "@/lib/accounts";
+import { firmLabelByCompanyId } from "@/lib/erp-data";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
 
 export const Route = createFileRoute("/receivables")({
@@ -13,11 +14,17 @@ export const Route = createFileRoute("/receivables")({
       { name: "description", content: "Payment tracking and outstanding monitoring after credit days start on the invoice." },
     ],
   }),
+  validateSearch: (search: Record<string, unknown>): { overdue?: string; bucket?: string; focus?: string } => ({
+    overdue: typeof search.overdue === "string" ? search.overdue : undefined,
+    bucket: typeof search.bucket === "string" ? search.bucket : undefined,
+    focus: typeof search.focus === "string" ? search.focus : undefined,
+  }),
   component: Receivables,
 });
 
 type InvoiceRow = {
   id: number;
+  company_id: number;
   customer_id: number;
   number: string;
   customer_name: string | null;
@@ -48,6 +55,7 @@ const inputCls =
 
 function Receivables() {
   const { firm } = useCompany();
+  const { overdue: overdueParam, bucket, focus } = Route.useSearch();
   const [rows, setRows] = useState<InvoiceRow[]>([]);
   const [aging, setAging] = useState<AgingRow[]>([]);
   const [error, setError] = useState("");
@@ -79,6 +87,33 @@ function Receivables() {
     () => rows.filter((i) => i.status === "open" || i.status === "partial"),
     [rows],
   );
+
+  const filteredOpen = useMemo(() => {
+    let list = open;
+    if (overdueParam === "1") {
+      list = list.filter((i) => i.due_date && new Date(i.due_date) < new Date());
+    }
+    if (bucket) {
+      const want =
+        bucket === "current"
+          ? "Current"
+          : bucket === "d1_30"
+            ? "1–30"
+            : bucket === "d31_60"
+              ? "31–60"
+              : bucket === "d61_90"
+                ? "61–90"
+                : bucket === "d90"
+                  ? "90+"
+                  : null;
+      if (want) list = list.filter((i) => agingBucket(i.due_date) === want);
+    }
+    if (focus === "delay") {
+      list = list.filter((i) => Number(i.interest_loss || 0) > 0);
+    }
+    return list;
+  }, [open, overdueParam, bucket, focus]);
+
   const outstanding = open.reduce((a, i) => a + Number(i.outstanding || 0), 0);
   const overdueRows = open.filter((i) => i.due_date && new Date(i.due_date) < new Date());
   const overdueAmt = overdueRows.reduce((a, i) => a + Number(i.outstanding || 0), 0);
@@ -117,6 +152,7 @@ function Receivables() {
     try {
       await api("/api/v1/payments", {
         method: "POST",
+        companyId: payFor.company_id,
         body: JSON.stringify({
           invoice_id: payFor.id,
           amount,
@@ -145,7 +181,8 @@ function Receivables() {
   async function saveAllocate(e: React.FormEvent) {
     e.preventDefault();
     const amount = Number(allocForm.amount);
-    if (!(amount > 0) || !allocForm.customer_id) {
+    const sample = open.find((i) => String(i.customer_id) === allocForm.customer_id);
+    if (!(amount > 0) || !sample) {
       setError("Choose a customer and enter a positive amount");
       return;
     }
@@ -154,8 +191,9 @@ function Receivables() {
     try {
       await api("/api/v1/accounts/allocate", {
         method: "POST",
+        companyId: sample.company_id,
         body: JSON.stringify({
-          customer_id: Number(allocForm.customer_id),
+          customer_id: sample.customer_id,
           amount,
           method: allocForm.method,
           reference: allocForm.reference.trim() || null,
@@ -183,6 +221,11 @@ function Receivables() {
         }
       />
       {error && !payFor && !alloc && <p className="mb-3 text-sm text-destructive">{error}</p>}
+      {focus === "credit" && (
+        <p className="mb-3 rounded-xl border border-border bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
+          Credit alerts — review ageing totals below and customers with high outstanding vs limit on Collection.
+        </p>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi label="Total outstanding" value={money(outstanding)} tone="warn" />
@@ -191,11 +234,24 @@ function Receivables() {
         <Kpi label="Cost of delay" value={money(delayCost)} />
       </div>
 
-      <Panel title="Open invoice register" hint="Due countdown is automatic from the customer’s credit days" className="mt-6">
-        <div className="mb-3 flex justify-end">
+      <Panel
+        title="Open invoice register"
+        hint={
+          overdueParam === "1" || bucket || focus
+            ? `Filtered · ${filteredOpen.length} of ${open.length} open`
+            : "Due countdown is automatic from the customer’s credit days"
+        }
+        className="mt-6"
+      >
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          {(overdueParam === "1" || bucket || focus) && (
+            <Link to="/receivables" search={{}} className="text-sm text-primary hover:underline">
+              Clear filter
+            </Link>
+          )}
           <button
             type="button"
-            className="rounded-lg border border-border px-3 py-1.5 text-sm"
+            className="ml-auto rounded-lg border border-border px-3 py-1.5 text-sm"
             onClick={() => {
               setError("");
               setAllocForm({
@@ -211,11 +267,12 @@ function Receivables() {
             Allocate payment
           </button>
         </div>
-        <Table head={["Customer", "Invoice", "Due", "Countdown", "Outstanding", "Ageing", "Cost of delay", "Status", ""]}>
-          {open.map((i) => {
+        <Table head={["Company", "Customer", "Invoice", "Due", "Countdown", "Outstanding", "Ageing", "Cost of delay", "Status", ""]}>
+          {filteredOpen.map((i) => {
             const pay = payStatus(i);
             return (
               <tr key={i.id}>
+                <Td className="text-muted-foreground">{firmLabelByCompanyId(i.company_id)}</Td>
                 <Td>{i.customer_name || "—"}</Td>
                 <Td className="font-medium">{i.number}</Td>
                 <Td className="text-muted-foreground">{i.due_date || "—"}</Td>
@@ -243,6 +300,7 @@ function Receivables() {
                           }
                           void api(`/api/v1/accounts/invoices/${i.id}/waive-penalty`, {
                             method: "POST",
+                            companyId: i.company_id,
                             body: JSON.stringify({ reason: reason.trim() }),
                           })
                             .then(() => load())
@@ -258,7 +316,11 @@ function Receivables() {
             );
           })}
         </Table>
-        {!open.length && <p className="mt-3 text-sm text-muted-foreground">No open outstanding. Receivables are closed.</p>}
+        {!filteredOpen.length && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {open.length ? "No invoices match this view." : "No open outstanding. Receivables are closed."}
+          </p>
+        )}
       </Panel>
 
       <Panel title="Aging" hint="Current · 1–30 · 31–60 · 61–90 · 90+" className="mt-6">

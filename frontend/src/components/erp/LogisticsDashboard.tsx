@@ -12,6 +12,8 @@ import {
   canDeliver,
   kg,
   outcomeCopy,
+  runDateLabel,
+  runTripHeading,
   slotLabel,
   statusLabel,
   stopCta,
@@ -153,29 +155,62 @@ export function LogisticsDashboard() {
   const key = truckKey(truck?.status);
   const run = activeRun(runs, truck?.status || "idle", truck?.run_id);
   const phase = workPhase(run, truck?.status || "idle");
-  const todayStops = useMemo(() => {
-    if (!run) return [] as { run: LogisticsRun; stop: LogisticsStop }[];
-    return run.stops.map((stop) => ({ run, stop }));
-  }, [run]);
-  const current = todayStops.find((r) => ["pending", "out_for_delivery"].includes(r.stop.status));
+  /** Every open assigned trip (all companies / windows), not only the active truck run. */
+  const assignedTrips = useMemo(() => {
+    const doneStop = new Set(["delivered", "partial", "failed", "completed"]);
+    const open = runs
+      .filter((r) => !["completed", "cancelled", "delivered"].includes(r.status))
+      .map((r) => ({
+        ...r,
+        stops: (r.stops || []).filter((s) => !doneStop.has(s.status)),
+      }))
+      .filter((r) => r.stops.length > 0);
+    const slotRank = (s?: string) => (s === "morning" ? 0 : s === "afternoon" ? 1 : s === "evening" ? 2 : 3);
+    return [...open].sort((a, b) => {
+      const d = String(a.on_date || "").localeCompare(String(b.on_date || ""));
+      if (d) return d;
+      const s = slotRank(a.slot) - slotRank(b.slot);
+      if (s) return s;
+      return a.id - b.id;
+    });
+  }, [runs]);
+  const allStops = useMemo(() => {
+    const rows: { run: LogisticsRun; stop: LogisticsStop }[] = [];
+    for (const trip of assignedTrips) {
+      for (const stop of trip.stops || []) rows.push({ run: trip, stop });
+    }
+    return rows;
+  }, [assignedTrips]);
+  const current = useMemo(() => {
+    const openStatuses = new Set(["pending", "out_for_delivery"]);
+    const fromActive = run
+      ? (run.stops || []).find((s) => openStatuses.has(s.status))
+      : null;
+    if (fromActive && run) return { run, stop: fromActive };
+    return allStops.find((r) => openStatuses.has(r.stop.status)) || null;
+  }, [run, allStops]);
   const nextLabel =
-    phase === "book"
+    phase === "book" && !assignedTrips.length
       ? "Waiting for assignment"
-      : phase === "leave"
-        ? "Load & go"
-        : phase === "deliver"
-          ? current
-            ? stopCta(current.stop.status, phase)
-            : "Coming back"
-          : "Arrived at base";
+      : phase === "book" && assignedTrips.length
+        ? "Open assigned trip"
+        : phase === "leave"
+          ? "Load & go"
+          : phase === "deliver"
+            ? current
+              ? stopCta(current.stop.status, phase)
+              : "Coming back"
+            : "Arrived at base";
   const nextHint =
-    phase === "book"
+    phase === "book" && !assignedTrips.length
       ? "Sales or Supervisor allots date, window and vehicle on Order desk. Then it appears here."
-      : phase === "leave"
-        ? `${slotLabel(run?.slot)}${run?.on_date ? ` · ${run.on_date}` : ""} assigned. Tap Load & go when the truck is loaded.`
-        : phase === "deliver"
-          ? "Deliver each customer in order. Last drop flips the truck to Coming back."
-          : "Drive to base. Tap Arrived at base so Sales sees Idle.";
+      : phase === "book" && assignedTrips.length
+        ? `${assignedTrips.length} trip(s) assigned. Tap Load & go on the trip you are driving.`
+        : phase === "leave"
+          ? `${slotLabel(run?.slot)} · ${runDateLabel(run?.on_date)} assigned. Tap Load & go when the truck is loaded.`
+          : phase === "deliver"
+            ? "Deliver each customer in order. Last drop flips the truck to Coming back."
+            : "Drive to base. Tap Arrived at base so Sales sees Idle.";
 
   async function setLive(status: TruckStateKey) {
     if (status === key) return;
@@ -197,7 +232,8 @@ export function LogisticsDashboard() {
   }
 
   async function doNext() {
-    if (phase === "book") return;
+    if (phase === "book" && !assignedTrips.length) return;
+    if (phase === "book" && assignedTrips.length) return void setLive("going");
     if (phase === "leave") return void setLive("going");
     if (phase === "deliver" && current) {
       setOpen(current);
@@ -370,13 +406,18 @@ export function LogisticsDashboard() {
               {nextLabel}
             </button>
           </>
-        ) : phase === "book" ? (
+        ) : phase === "book" && !assignedTrips.length ? (
           <p className="mt-3 rounded-2xl border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
             No assignment yet. Sales or Supervisor opens Order desk, picks date + window + vehicle, then Assign.
           </p>
         ) : (
           <>
             <p className="mt-1 text-sm text-muted-foreground">{nextHint}</p>
+            {assignedTrips.length > 1 && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {assignedTrips.length} assigned trips below — all companies / windows.
+              </p>
+            )}
             <button
               type="button"
               disabled={busy}
@@ -389,9 +430,13 @@ export function LogisticsDashboard() {
         )}
       </section>
 
-      <section className="space-y-2">
+      <section className="space-y-3">
         <h2 className="text-sm font-medium text-muted-foreground">
-          {phase === "book" ? "No trip yet" : `${slotLabel(run?.slot)} drops`}
+          {!assignedTrips.length
+            ? "No trip yet"
+            : assignedTrips.length === 1
+              ? `${slotLabel(assignedTrips[0].slot)} · ${runDateLabel(assignedTrips[0].on_date)}`
+              : `All assigned trips (${allStops.length} drops)`}
         </h2>
         <input
           ref={cardCamRef}
@@ -408,83 +453,96 @@ export function LogisticsDashboard() {
             void takePhoto(f);
           }}
         />
-        {todayStops.map(({ run: trip, stop }) => {
-          const isCurrent = current?.stop.id === stop.id;
-          const live = canDeliver(stop.status, phase);
-          return (
-            <article
-              key={stop.id}
-              className={cn(
-                "rounded-2xl border bg-card px-3 py-3",
-                isCurrent ? "border-primary" : "border-border",
-              )}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {stop.company_name || firm?.short || "Avighna"}
-                </p>
-                <span className="text-xs font-medium">{statusLabel(stop.status)}</span>
-              </div>
-              <p className="mt-1 font-medium">{stop.customer_name}</p>
-              <p className="text-sm">{stop.product_summary || kg(stop.qty_ordered)}</p>
-              {stop.address && (
-                <a href={mapsHref(stop.address)} target="_blank" rel="noreferrer" className="mt-1 block text-sm text-muted-foreground">
-                  {stop.address}
-                </a>
-              )}
-              {stop.phone && (
-                <a href={telHref(stop.phone)} className="mt-1 block text-sm font-medium">
-                  {stop.phone}
-                </a>
-              )}
-              <div className="mt-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  className="text-sm font-medium text-primary"
-                  onClick={() => {
-                    setOpen({ run: trip, stop });
-                    void showInvoice(stop);
-                  }}
-                >
-                  {stop.invoice_number || "Invoice"}
-                </button>
-                <span className="flex-1" />
-                <button
-                  type="button"
+        {assignedTrips.map((trip) => (
+          <div key={trip.id} className="space-y-2">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 px-0.5">
+              <p className="text-xs font-semibold tracking-wide text-muted-foreground">
+                {runTripHeading(trip)}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {[trip.vehicle_plate, trip.driver_name, statusLabel(trip.status)].filter(Boolean).join(" · ")}
+              </p>
+            </div>
+            {(trip.stops || []).map((stop) => {
+              const isCurrent = current?.stop.id === stop.id;
+              const tripPhase = workPhase(trip, truck?.status || "idle");
+              const liveBtn = canDeliver(stop.status, tripPhase === "book" ? phase : tripPhase);
+              return (
+                <article
+                  key={stop.id}
                   className={cn(
-                    "min-h-11 rounded-xl px-3 text-sm font-semibold",
-                    live ? "bg-primary text-primary-foreground" : "border border-border",
+                    "rounded-2xl border bg-card px-3 py-3",
+                    isCurrent ? "border-primary" : "border-border",
                   )}
-                  onClick={() => {
-                    setOpen({ run: trip, stop });
-                    setOutcome("delivered");
-                    setStep(live ? "deliver" : "detail");
-                  }}
                 >
-                  {stopCta(stop.status, phase)}
-                </button>
-                {live && (
-                  <button
-                    type="button"
-                    aria-label="Capture photo"
-                    className="flex size-11 items-center justify-center rounded-xl border border-border"
-                    onClick={() => {
-                      setOpen({ run: trip, stop });
-                      setStep("deliver");
-                      setOutcome("delivered");
-                      setTimeout(() => cardCamRef.current?.click(), 0);
-                    }}
-                  >
-                    <Camera className="size-5" />
-                  </button>
-                )}
-              </div>
-            </article>
-          );
-        })}
-        {!todayStops.length && (
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {stop.company_name || firm?.short || "Avighna"}
+                    </p>
+                    <span className="text-xs font-medium">{statusLabel(stop.status)}</span>
+                  </div>
+                  <p className="mt-1 font-medium">{stop.customer_name}</p>
+                  <p className="text-sm">{stop.product_summary || kg(stop.qty_ordered)}</p>
+                  {stop.address && (
+                    <a href={mapsHref(stop.address)} target="_blank" rel="noreferrer" className="mt-1 block text-sm text-muted-foreground">
+                      {stop.address}
+                    </a>
+                  )}
+                  {stop.phone && (
+                    <a href={telHref(stop.phone)} className="mt-1 block text-sm font-medium">
+                      {stop.phone}
+                    </a>
+                  )}
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="text-sm font-medium text-primary"
+                      onClick={() => {
+                        setOpen({ run: trip, stop });
+                        void showInvoice(stop);
+                      }}
+                    >
+                      {stop.invoice_number || "Invoice"}
+                    </button>
+                    <span className="flex-1" />
+                    <button
+                      type="button"
+                      className={cn(
+                        "min-h-11 rounded-xl px-3 text-sm font-semibold",
+                        liveBtn ? "bg-primary text-primary-foreground" : "border border-border",
+                      )}
+                      onClick={() => {
+                        setOpen({ run: trip, stop });
+                        setOutcome("delivered");
+                        setStep(liveBtn ? "deliver" : "detail");
+                      }}
+                    >
+                      {stopCta(stop.status, tripPhase === "book" ? phase : tripPhase)}
+                    </button>
+                    {liveBtn && (
+                      <button
+                        type="button"
+                        aria-label="Capture photo"
+                        className="flex size-11 items-center justify-center rounded-xl border border-border"
+                        onClick={() => {
+                          setOpen({ run: trip, stop });
+                          setStep("deliver");
+                          setOutcome("delivered");
+                          setTimeout(() => cardCamRef.current?.click(), 0);
+                        }}
+                      >
+                        <Camera className="size-5" />
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ))}
+        {!allStops.length && (
           <p className="rounded-2xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-            {phase === "book" ? "Waiting for supervisor to assign an order." : "No drops on this run."}
+            Waiting for Sales or Supervisor to assign an order on Order desk.
           </p>
         )}
       </section>

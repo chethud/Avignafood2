@@ -98,6 +98,38 @@ export function slotLabel(slot?: string) {
   return s === "morning" ? "Morning" : s === "evening" ? "Evening" : "Afternoon";
 }
 
+/** Driver-facing run date: Today / Tomorrow / Wed, 9 Sep 2026 (local calendar day). */
+export function runDateLabel(iso?: string | null) {
+  if (!iso) return "Date not set";
+  const raw = String(iso).slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!m) return raw;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const target = new Date(y, mo - 1, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const t0 = new Date(today);
+  const t1 = new Date(today);
+  t1.setDate(t1.getDate() + 1);
+  const pretty = target.toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  if (target.getTime() === t0.getTime()) return `Today · ${pretty}`;
+  if (target.getTime() === t1.getTime()) return `Tomorrow · ${pretty}`;
+  return pretty;
+}
+
+export function runTripHeading(run: { on_date?: string | null; slot?: string; number?: string }) {
+  const parts = [slotLabel(run.slot), runDateLabel(run.on_date)];
+  if (run.number) parts.push(run.number);
+  return parts.join(" · ");
+}
+
 export const TRUCK_STATES = [
   { key: "idle" as const, title: "Idle", hint: "At base" },
   { key: "going" as const, title: "Going", hint: "Out with goods" },
@@ -141,11 +173,12 @@ export function workPhase(run: LogisticsRun | null, status: string): WorkPhase {
 export function activeRun(runs: LogisticsRun[], status: string, runId?: number | null): LogisticsRun | null {
   if (runId) {
     const hit = runs.find((r) => r.id === runId);
-    if (hit && !["completed", "cancelled"].includes(hit.status)) return hit;
+    if (hit && !["completed", "cancelled", "delivered"].includes(hit.status)) return hit;
   }
-  const going = runs.find((r) => GOING.includes(r.status));
-  const back = runs.find((r) => r.status === "returning");
-  const booked = runs.find((r) => BOOKED.includes(r.status));
+  const open = runs.filter((r) => !["completed", "cancelled", "delivered"].includes(r.status));
+  const going = open.find((r) => GOING.includes(r.status));
+  const back = open.find((r) => r.status === "returning");
+  const booked = open.find((r) => BOOKED.includes(r.status)) || open[0] || null;
   const key = truckKey(status);
   if (key === "going") return going || booked || null;
   if (key === "coming_back") return back || going || null;

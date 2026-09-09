@@ -1,8 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { api, getCompanyId } from "@/lib/api";
+import { api } from "@/lib/api";
+import { firmLabelByCompanyId } from "@/lib/erp-data";
 import { Badge, PageHeader, Panel } from "@/components/erp/ui-bits";
-import { SLOTS, VehicleGlance, todayIso, type SlotKey, type VehicleAvail } from "@/components/erp/VehicleBoard";
+import { SLOTS, type SlotKey, type VehicleAvail } from "@/components/erp/VehicleBoard";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/ops")({
@@ -30,6 +31,8 @@ type DeskLine = {
 
 type DeskOrder = {
   id: number;
+  company_id: number;
+  company_name?: string | null;
   customer_id: number;
   customer_name: string;
   quotation_id: number | null;
@@ -51,7 +54,9 @@ type DeskOrder = {
 
 type Filter = "all" | "ready" | "shortage" | "procuring" | "allocated";
 
-type AllotDraft = { date: string; slot: SlotKey; vehicleId: number | "" };
+type AllotDraft = { date: string; slot: SlotKey | ""; vehicleId: number | "" };
+
+const EMPTY_ALLOT: AllotDraft = { date: "", slot: "", vehicleId: "" };
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
@@ -93,7 +98,6 @@ function OrderDesk() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [fleet, setFleet] = useState<VehicleAvail[]>([]);
-  const [glanceDate, setGlanceDate] = useState(todayIso());
   const [drafts, setDrafts] = useState<Record<number, AllotDraft>>({});
   const [maker, setMaker] = useState("");
   const [prNotes, setPrNotes] = useState("");
@@ -101,32 +105,17 @@ function OrderDesk() {
   const [receiveMaker, setReceiveMaker] = useState("");
 
   function draftFor(so: DeskOrder): AllotDraft {
-    return (
-      drafts[so.id] || {
-        date: so.slot_date || todayIso(),
-        slot: (so.slot as SlotKey) || "morning",
-        vehicleId: fleet[0]?.vehicle_id ?? "",
-      }
-    );
+    return drafts[so.id] || EMPTY_ALLOT;
   }
 
   function patchDraft(soId: number, patch: Partial<AllotDraft>) {
     setDrafts((prev) => {
-      const base = prev[soId] || {
-        date: todayIso(),
-        slot: "morning" as SlotKey,
-        vehicleId: fleet[0]?.vehicle_id ?? ("" as const),
-      };
+      const base = prev[soId] || EMPTY_ALLOT;
       return { ...prev, [soId]: { ...base, ...patch } };
     });
   }
 
   async function loadDesk() {
-    if (!getCompanyId()) {
-      setError("Pick a company first (top bar), then open Order desk again.");
-      setRows([]);
-      return;
-    }
     try {
       const data = await api<DeskOrder[]>("/api/v1/sales-orders/desk");
       setRows(data);
@@ -154,10 +143,6 @@ function OrderDesk() {
     void loadDesk();
   }, []);
 
-  useEffect(() => {
-    void loadFleet(glanceDate);
-  }, [glanceDate]);
-
   const visible = useMemo(() => {
     if (filter === "all") {
       return rows.filter((r) =>
@@ -183,7 +168,6 @@ function OrderDesk() {
     try {
       await fn();
       await loadDesk();
-      await loadFleet(glanceDate);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Action failed");
     } finally {
@@ -224,13 +208,6 @@ function OrderDesk() {
         })}
       </div>
 
-      <Panel title="Fleet (read only)" hint="Windows book when you Assign an order" className="mb-4">
-        <VehicleGlance onDate={glanceDate} onDateChange={setGlanceDate} />
-        <p className="mt-2 text-xs text-muted-foreground">
-          Free / Booked here is only a preview. To book a truck, open a <strong>Ready</strong> order below.
-        </p>
-      </Panel>
-
       {!visible.length && (
         <Panel>
           <p className="text-sm text-muted-foreground">
@@ -246,16 +223,18 @@ function OrderDesk() {
         {visible.map((so) => {
           const draft = draftFor(so);
           const selected = fleet.find((v) => v.vehicle_id === draft.vehicleId);
-          const slotFree = selected ? selected[draft.slot] === "free" : false;
+          const slotFree = selected && draft.slot ? selected[draft.slot] === "free" : false;
           const canBook = so.ops_status === "ready" || so.ops_status === "pending_verify";
+          const allotComplete = Boolean(draft.date && draft.slot && draft.vehicleId);
 
           return (
             <Panel
               key={so.id}
               title={`SO-${so.id} · ${so.customer_name}`}
-              hint={so.confirmed_at ? `Confirmed ${so.confirmed_at.slice(0, 10)}` : undefined}
+              hint={`${so.company_name || firmLabelByCompanyId(so.company_id)}${so.confirmed_at ? ` · Confirmed ${so.confirmed_at.slice(0, 10)}` : ""}`}
             >
               <div className="mb-3 flex flex-wrap items-center gap-2">
+                <Badge tone="neutral">{so.company_name || firmLabelByCompanyId(so.company_id)}</Badge>
                 <Badge tone={opsTone(so.ops_status)}>{opsLabel(so.ops_status)}</Badge>
                 {so.dispatch_id && (
                   <Badge tone="good">
@@ -296,7 +275,10 @@ function OrderDesk() {
                     disabled={busy === `v-${so.id}`}
                     onClick={() =>
                       run(`v-${so.id}`, () =>
-                        api(`/api/v1/sales-orders/${so.id}/verify-stock`, { method: "POST" }).then(() => undefined),
+                        api(`/api/v1/sales-orders/${so.id}/verify-stock`, {
+                          method: "POST",
+                          companyId: so.company_id,
+                        }).then(() => undefined),
                       )
                     }
                     className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
@@ -334,6 +316,7 @@ function OrderDesk() {
                       run(`pr-${so.id}`, () =>
                         api(`/api/v1/sales-orders/${so.id}/raise-purchase`, {
                           method: "POST",
+                          companyId: so.company_id,
                           body: JSON.stringify({ manufacturer: maker || null, notes: prNotes || null }),
                         }).then(() => undefined),
                       )
@@ -377,6 +360,7 @@ function OrderDesk() {
                           run(`rx-${so.id}`, () =>
                             api(`/api/v1/purchases/${so.purchase_id}/receive`, {
                               method: "POST",
+                              companyId: so.company_id,
                               body: JSON.stringify({
                                 batch: batch || null,
                                 manufacturer: receiveMaker || null,
@@ -408,8 +392,9 @@ function OrderDesk() {
                         className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                         value={draft.date}
                         onChange={(e) => {
-                          patchDraft(so.id, { date: e.target.value });
-                          void loadFleet(e.target.value);
+                          const date = e.target.value;
+                          patchDraft(so.id, { date, vehicleId: "" });
+                          if (date) void loadFleet(date);
                         }}
                       />
                     </label>
@@ -418,8 +403,14 @@ function OrderDesk() {
                       <select
                         className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                         value={draft.slot}
-                        onChange={(e) => patchDraft(so.id, { slot: e.target.value as SlotKey })}
+                        onChange={(e) =>
+                          patchDraft(so.id, {
+                            slot: (e.target.value || "") as SlotKey | "",
+                            vehicleId: "",
+                          })
+                        }
                       >
+                        <option value="">Choose window</option>
                         {SLOTS.map((s) => (
                           <option key={s.key} value={s.key}>
                             {s.label}
@@ -432,19 +423,28 @@ function OrderDesk() {
                       <select
                         className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                         value={draft.vehicleId}
+                        disabled={!draft.date || !draft.slot}
                         onChange={(e) => patchDraft(so.id, { vehicleId: e.target.value ? Number(e.target.value) : "" })}
                       >
-                        {!fleet.length && <option value="">No vehicles</option>}
-                        {fleet.map((v) => (
-                          <option key={v.vehicle_id} value={v.vehicle_id}>
-                            {v.name} · {v.plate}
-                            {v.driver_name ? ` · ${v.driver_name}` : ""} · {v[draft.slot]}
-                          </option>
-                        ))}
+                        <option value="">
+                          {!draft.date || !draft.slot
+                            ? "Pick date + window first"
+                            : fleet.length
+                              ? "Choose vehicle"
+                              : "No vehicles"}
+                        </option>
+                        {draft.date &&
+                          draft.slot &&
+                          fleet.map((v) => (
+                            <option key={v.vehicle_id} value={v.vehicle_id}>
+                              {v.name} · {v.plate}
+                              {v.driver_name ? ` · ${v.driver_name}` : ""} · {v[draft.slot]}
+                            </option>
+                          ))}
                       </select>
                     </label>
                   </div>
-                  {selected && (
+                  {selected && draft.slot && draft.date && (
                     <p className="text-xs text-muted-foreground">
                       {draft.slot} on {draft.date}:{" "}
                       <span className={slotFree ? "text-success" : "text-destructive"}>
@@ -455,11 +455,12 @@ function OrderDesk() {
                   )}
                   <button
                     type="button"
-                    disabled={busy === `a-${so.id}` || !draft.vehicleId}
+                    disabled={busy === `a-${so.id}` || !allotComplete}
                     onClick={() =>
                       run(`a-${so.id}`, () =>
                         api(`/api/v1/sales-orders/${so.id}/allocate`, {
                           method: "POST",
+                          companyId: so.company_id,
                           body: JSON.stringify({
                             on_date: draft.date,
                             slot: draft.slot,
@@ -506,6 +507,7 @@ function OrderDesk() {
                         run(`r-${so.id}`, () =>
                           api(`/api/v1/sales-orders/${so.id}/reassign-vehicle`, {
                             method: "POST",
+                            companyId: so.company_id,
                             body: JSON.stringify({ vehicle_id: draft.vehicleId }),
                           }).then(() => undefined),
                         )

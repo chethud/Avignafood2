@@ -506,6 +506,7 @@ class SalesOrderCreate(BaseModel):
 class SalesOrderOut(ORMModel):
     id: int
     company_id: int
+    company_name: str | None = None
     customer_id: int
     quotation_id: int | None
     warehouse_id: int
@@ -515,6 +516,8 @@ class SalesOrderOut(ORMModel):
     stock_warnings: list[str] = []
     ops_status: str = "pending_approval"
     customer_name: str | None = None
+    created_by_id: int | None = None
+    created_by_name: str | None = None
     created_at: datetime | None = None
     confirmed_at: datetime | None = None
     logistics_status: str | None = None
@@ -547,6 +550,8 @@ class OutstandingDeliveryOut(BaseModel):
 
 class OrderDeskOut(BaseModel):
     id: int
+    company_id: int
+    company_name: str | None = None
     customer_id: int
     customer_name: str
     quotation_id: int | None = None
@@ -665,6 +670,8 @@ class BillableLoadOut(BaseModel):
 
 class BillableOrderOut(BaseModel):
     sales_order_id: int
+    company_id: int
+    company_name: str | None = None
     customer_id: int
     customer_name: str
     address: str | None = None

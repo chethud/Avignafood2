@@ -20,13 +20,11 @@ def list_purchases(
     auth: AuthContext = Depends(require_perms("purchases.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    return (
-        db.query(Purchase)
-        .filter(Purchase.company_id == company_id, Purchase.organization_id == auth.organization_id)
-        .order_by(Purchase.id.desc())
-        .all()
-    )
+    company_id = auth.company_or_all()
+    q = db.query(Purchase).filter(Purchase.organization_id == auth.organization_id)
+    if company_id is not None:
+        q = q.filter(Purchase.company_id == company_id)
+    return q.order_by(Purchase.id.desc()).all()
 
 
 @router.post("", response_model=PurchaseOut)

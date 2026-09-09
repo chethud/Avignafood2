@@ -20,6 +20,7 @@ from app.core.models import (
     SalesOrderLine,
     SalesOrderStatus,
     StockBalance,
+    User,
     Vehicle,
     VehicleSlot,
     Warehouse,
@@ -72,17 +73,46 @@ def _logistics_for(db: Session, so_id: int) -> tuple[str | None, str | None, str
 
 def _out(so: SalesOrder, warnings: list[str] | None = None, customer_name: str | None = None, db: Session | None = None) -> SalesOrderOut:
     logistics_status = vehicle = eta = None
+    created_by_name = None
+    company_name = None
+    lines_out: list[dict] = []
     if db is not None:
         logistics_status, vehicle, eta = _logistics_for(db, so.id)
-    return SalesOrderOut(
-        id=so.id,
-        company_id=so.company_id,
-        customer_id=so.customer_id,
-        quotation_id=so.quotation_id,
-        warehouse_id=so.warehouse_id,
-        status=so.status.value,
-        notes=so.notes,
-        lines=[
+        if so.created_by_id:
+            creator = db.query(User).filter(User.id == so.created_by_id).first()
+            created_by_name = creator.full_name if creator else None
+        from app.core.models import Company
+
+        company = db.query(Company).filter(Company.id == so.company_id).first()
+        company_name = (company.trade_name or company.legal_name) if company else None
+        for ln in so.lines:
+            product = db.query(Product).filter(Product.id == ln.product_id).first()
+            have = on_hand(db, so.warehouse_id, ln.product_id)
+            ordered = Decimal(str(ln.quantity or 0))
+            extra = qty_short(ordered, have)  # ordered beyond what we have
+            wholesale = Decimal(str(product.base_price if product else 0))
+            selling = Decimal(str((product.selling_price if product and product.selling_price else wholesale) or 0))
+            requested = Decimal(str(ln.unit_price or 0))
+            lines_out.append(
+                {
+                    "id": ln.id,
+                    "product_id": ln.product_id,
+                    "product_name": product.name if product else f"Product #{ln.product_id}",
+                    "unit": product.unit if product else "KG",
+                    "quantity": float(ordered),
+                    "on_hand": float(have),
+                    "extra_qty": float(extra),
+                    "stock_ok": have >= ordered,
+                    "unit_price": float(requested),
+                    "requested_price": float(requested),
+                    "wholesale_price": float(wholesale),
+                    "selling_price": float(selling),
+                    "below_wholesale": requested < wholesale,
+                    "outstanding_qty": float(getattr(ln, "outstanding_qty", 0) or 0),
+                }
+            )
+    else:
+        lines_out = [
             {
                 "id": ln.id,
                 "product_id": ln.product_id,
@@ -91,10 +121,22 @@ def _out(so: SalesOrder, warnings: list[str] | None = None, customer_name: str |
                 "outstanding_qty": float(getattr(ln, "outstanding_qty", 0) or 0),
             }
             for ln in so.lines
-        ],
+        ]
+    return SalesOrderOut(
+        id=so.id,
+        company_id=so.company_id,
+        company_name=company_name,
+        customer_id=so.customer_id,
+        quotation_id=so.quotation_id,
+        warehouse_id=so.warehouse_id,
+        status=so.status.value,
+        notes=so.notes,
+        lines=lines_out,
         stock_warnings=warnings or [],
         ops_status=getattr(so, "ops_status", None) or "pending_approval",
         customer_name=customer_name,
+        created_by_id=so.created_by_id,
+        created_by_name=created_by_name,
         created_at=so.created_at,
         confirmed_at=so.confirmed_at,
         logistics_status=logistics_status,
@@ -108,15 +150,16 @@ def list_orders(
     auth: AuthContext = Depends(require_perms("sales.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     ensure_sales_schema(engine)
-    rows = (
+    q = (
         db.query(SalesOrder)
         .options(joinedload(SalesOrder.lines))
-        .filter(SalesOrder.company_id == company_id, SalesOrder.organization_id == auth.organization_id)
-        .order_by(SalesOrder.id.desc())
-        .all()
+        .filter(SalesOrder.organization_id == auth.organization_id)
     )
+    if company_id is not None:
+        q = q.filter(SalesOrder.company_id == company_id)
+    rows = q.order_by(SalesOrder.id.desc()).all()
     names = {
         c.id: c.name
         for c in db.query(Customer).filter(Customer.id.in_({r.customer_id for r in rows} or {0})).all()
@@ -139,19 +182,19 @@ def order_desk(
     db: Session = Depends(get_db),
 ):
     """Order desk: invoiced orders for Sales / Supervisor to confirm stock and book a truck window."""
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     ensure_sales_schema(engine)
-    rows = (
+    q = (
         db.query(SalesOrder)
         .options(joinedload(SalesOrder.lines))
         .filter(
-            SalesOrder.company_id == company_id,
             SalesOrder.organization_id == auth.organization_id,
             SalesOrder.status == SalesOrderStatus.INVOICED,
         )
-        .order_by(SalesOrder.id.desc())
-        .all()
     )
+    if company_id is not None:
+        q = q.filter(SalesOrder.company_id == company_id)
+    rows = q.order_by(SalesOrder.id.desc()).all()
     from app.sales.ops import line_stock
 
     changed = False

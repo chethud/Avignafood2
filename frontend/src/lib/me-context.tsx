@@ -23,6 +23,7 @@ export function MeProvider({ children }: { children: ReactNode }) {
     } catch {
       localStorage.removeItem("token");
       localStorage.removeItem("companyId");
+      localStorage.removeItem("firmScope");
       setMe(null);
       return null;
     } finally {

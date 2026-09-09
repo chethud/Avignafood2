@@ -190,30 +190,31 @@ def list_invoices(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    rows = (
+    company_id = auth.company_or_all()
+    q = (
         db.query(Invoice)
         .options(joinedload(Invoice.lines))
-        .filter(Invoice.company_id == company_id, Invoice.organization_id == auth.organization_id)
-        .order_by(Invoice.id.desc())
-        .all()
+        .filter(Invoice.organization_id == auth.organization_id)
     )
-    customers = {
-        c.id: c
-        for c in db.query(Customer).filter(Customer.company_id == company_id).all()
-    }
+    if company_id is not None:
+        q = q.filter(Invoice.company_id == company_id)
+    rows = q.order_by(Invoice.id.desc()).all()
+    cust_q = db.query(Customer).filter(Customer.organization_id == auth.organization_id)
+    if company_id is not None:
+        cust_q = cust_q.filter(Customer.company_id == company_id)
+    customers = {c.id: c for c in cust_q.all()}
     names = _product_names(db, rows)
     return [_out(r, customers.get(r.customer_id), names) for r in rows]
 
 
-def _invoiced_dispatch_ids(db: Session, company_id: int) -> set[int]:
-    return {
-        r[0]
-        for r in db.query(Invoice.dispatch_id)
-        .filter(Invoice.company_id == company_id, Invoice.dispatch_id.isnot(None))
-        .all()
-        if r[0]
-    }
+def _invoiced_dispatch_ids(db: Session, company_id: int | None, org_id: int) -> set[int]:
+    q = db.query(Invoice.dispatch_id).filter(
+        Invoice.organization_id == org_id,
+        Invoice.dispatch_id.isnot(None),
+    )
+    if company_id is not None:
+        q = q.filter(Invoice.company_id == company_id)
+    return {r[0] for r in q.all() if r[0]}
 
 
 def _notice(
@@ -247,16 +248,17 @@ def _notice(
     )
 
 
-def _list_notices(db: Session, company_id: int, org_id: int) -> list[BillableLoadOut]:
-    invoiced_ids = _invoiced_dispatch_ids(db, company_id)
-    loads = (
-        db.query(Dispatch)
-        .filter(Dispatch.company_id == company_id, Dispatch.organization_id == org_id)
-        .order_by(Dispatch.id.desc())
-        .all()
-    )
-    customers = {c.id: c for c in db.query(Customer).filter(Customer.company_id == company_id).all()}
-    return [_notice(db, company_id, load, customers, invoiced_ids) for load in loads]
+def _list_notices(db: Session, company_id: int | None, org_id: int) -> list[BillableLoadOut]:
+    invoiced_ids = _invoiced_dispatch_ids(db, company_id, org_id)
+    q = db.query(Dispatch).filter(Dispatch.organization_id == org_id)
+    if company_id is not None:
+        q = q.filter(Dispatch.company_id == company_id)
+    loads = q.order_by(Dispatch.id.desc()).all()
+    cust_q = db.query(Customer).filter(Customer.organization_id == org_id)
+    if company_id is not None:
+        cust_q = cust_q.filter(Customer.company_id == company_id)
+    customers = {c.id: c for c in cust_q.all()}
+    return [_notice(db, load.company_id, load, customers, invoiced_ids) for load in loads]
 
 
 @router.get("/dispatch-inbox", response_model=list[BillableLoadOut])
@@ -265,7 +267,7 @@ def dispatch_inbox(
     db: Session = Depends(get_db),
 ):
     """All dispatch loads Accounts should see — info arrives here before invoicing."""
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     return _list_notices(db, company_id, auth.organization_id)
 
 
@@ -275,7 +277,7 @@ def billable_loads(
     db: Session = Depends(get_db),
 ):
     """Loads near dispatch that do not yet have an invoice — Accounts' work queue."""
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     return [n for n in _list_notices(db, company_id, auth.organization_id) if n.can_invoice]
 
 
@@ -285,24 +287,28 @@ def billable_orders(
     db: Session = Depends(get_db),
 ):
     """Sales orders Super Admin approved that Accounts can invoice. Invoice is raised before dispatch."""
-    company_id = auth.require_company()
-    invoiced = {
-        r[0]
-        for r in db.query(Invoice.sales_order_id)
-        .filter(Invoice.company_id == company_id, Invoice.sales_order_id.isnot(None))
-        .all()
-        if r[0]
-    }
-    rows = (
+    company_id = auth.company_or_all()
+    inv_q = db.query(Invoice.sales_order_id).filter(
+        Invoice.organization_id == auth.organization_id,
+        Invoice.sales_order_id.isnot(None),
+    )
+    so_q = (
         db.query(SalesOrder)
         .options(joinedload(SalesOrder.lines))
         .filter(
-            SalesOrder.company_id == company_id,
+            SalesOrder.organization_id == auth.organization_id,
             SalesOrder.status == SalesOrderStatus.CONFIRMED,
         )
-        .order_by(SalesOrder.id.desc())
-        .all()
     )
+    if company_id is not None:
+        inv_q = inv_q.filter(Invoice.company_id == company_id)
+        so_q = so_q.filter(SalesOrder.company_id == company_id)
+    invoiced = {r[0] for r in inv_q.all() if r[0]}
+    rows = so_q.order_by(SalesOrder.id.desc()).all()
+    companies = {
+        c.id: (c.trade_name or c.legal_name)
+        for c in db.query(Company).filter(Company.organization_id == auth.organization_id).all()
+    }
     out: list[BillableOrderOut] = []
     for so in rows:
         if so.id in invoiced:
@@ -318,12 +324,14 @@ def billable_orders(
             sub += line_sub
             tax += line_sub * gst / Decimal("100")
         est = sub + tax
-        due = _customer_outstanding(db, company_id, so.customer_id)
+        due = _customer_outstanding(db, so.company_id, so.customer_id)
         limit = (customer.credit_limit if customer else Decimal("0")) or Decimal("0")
         projected = due + est
         out.append(
             BillableOrderOut(
                 sales_order_id=so.id,
+                company_id=so.company_id,
+                company_name=companies.get(so.company_id),
                 customer_id=so.customer_id,
                 customer_name=customer.name if customer else f"Customer {so.customer_id}",
                 address=(customer.shipping_address or customer.address) if customer else None,
@@ -484,27 +492,23 @@ def list_client_accounts(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    customers = (
-        db.query(Customer)
-        .filter(Customer.company_id == company_id, Customer.organization_id == auth.organization_id)
-        .order_by(Customer.name)
-        .all()
+    company_id = auth.company_or_all()
+    cust_q = db.query(Customer).filter(Customer.organization_id == auth.organization_id)
+    inv_q = db.query(Invoice).filter(
+        Invoice.organization_id == auth.organization_id,
+        Invoice.status != InvoiceStatus.CANCELLED,
     )
-    invoices = (
-        db.query(Invoice)
-        .filter(Invoice.company_id == company_id, Invoice.status != InvoiceStatus.CANCELLED)
-        .all()
+    disp_q = db.query(Dispatch.customer_id, func.count(Dispatch.id)).filter(
+        Dispatch.organization_id == auth.organization_id,
+        Dispatch.status.in_(("Dispatched", "Delivered")),
     )
-    fulfilled = (
-        db.query(Dispatch.customer_id, func.count(Dispatch.id))
-        .filter(
-            Dispatch.company_id == company_id,
-            Dispatch.status.in_(("Dispatched", "Delivered")),
-        )
-        .group_by(Dispatch.customer_id)
-        .all()
-    )
+    if company_id is not None:
+        cust_q = cust_q.filter(Customer.company_id == company_id)
+        inv_q = inv_q.filter(Invoice.company_id == company_id)
+        disp_q = disp_q.filter(Dispatch.company_id == company_id)
+    customers = cust_q.order_by(Customer.name).all()
+    invoices = inv_q.all()
+    fulfilled = disp_q.group_by(Dispatch.customer_id).all()
     fulfilled_map = {r[0]: int(r[1]) for r in fulfilled}
 
     inv_by_cust: dict[int, list[Invoice]] = {}
@@ -629,19 +633,20 @@ def invoice_from_order(
     body: InvoiceFromOrderIn | None = None,
 ):
     """Accounts opens Ready to invoice, enters bill details, then raises the GST invoice."""
-    company_id = auth.require_company()
-    so = (
+    so_q = (
         db.query(SalesOrder)
         .options(joinedload(SalesOrder.lines))
         .filter(
             SalesOrder.id == order_id,
-            SalesOrder.company_id == company_id,
             SalesOrder.organization_id == auth.organization_id,
         )
-        .first()
     )
+    if auth.company_id is not None:
+        so_q = so_q.filter(SalesOrder.company_id == auth.company_id)
+    so = so_q.first()
     if not so:
         raise HTTPException(status_code=404, detail="Sales order not found")
+    company_id = so.company_id
     if so.status != SalesOrderStatus.CONFIRMED:
         raise HTTPException(status_code=400, detail="Super Admin must approve the order before invoicing")
     existing = db.query(Invoice).filter(Invoice.sales_order_id == so.id).first()

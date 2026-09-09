@@ -38,6 +38,15 @@ export const firms = [
 export const firmName = (id: FirmId) =>
   id === "all" ? "All companies" : (firms.find((f) => f.id === id)?.name ?? "All companies");
 
+export function firmByCompanyId(companyId: number | null | undefined) {
+  if (companyId == null) return null;
+  return firms.find((f) => f.companyId === companyId) ?? null;
+}
+
+export function firmLabelByCompanyId(companyId: number | null | undefined) {
+  return firmByCompanyId(companyId)?.short || firmByCompanyId(companyId)?.name || (companyId != null ? `Company ${companyId}` : "—");
+}
+
 export const inr = (n: number) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
 

@@ -12,6 +12,7 @@ from app.core.models import (
     SalesOrderLine,
     SalesOrderStatus,
     StockBalance,
+    Company,
 )
 from app.core.schemas import OrderDeskLine, OrderDeskOut, OutstandingDeliveryOut
 from app.inventory.routes import _default_warehouse
@@ -94,6 +95,7 @@ def open_confirmed_from_quotation(db: Session, *, auth, quotation: Quotation) ->
 def desk_out(db: Session, so: SalesOrder) -> OrderDeskOut:
     so = db.query(SalesOrder).options(joinedload(SalesOrder.lines)).filter(SalesOrder.id == so.id).first() or so
     customer = db.query(Customer).filter(Customer.id == so.customer_id).first()
+    company = db.query(Company).filter(Company.id == so.company_id).first()
     lines = line_stock(db, so.warehouse_id, so.lines)
     purchase = (
         db.query(Purchase)
@@ -109,6 +111,8 @@ def desk_out(db: Session, so: SalesOrder) -> OrderDeskOut:
     )
     return OrderDeskOut(
         id=so.id,
+        company_id=so.company_id,
+        company_name=(company.trade_name or company.legal_name) if company else None,
         customer_id=so.customer_id,
         customer_name=customer.name if customer else f"Customer #{so.customer_id}",
         quotation_id=so.quotation_id,

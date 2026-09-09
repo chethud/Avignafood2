@@ -156,15 +156,16 @@ def list_customers(
     db: Session = Depends(get_db),
 ):
     _ensure()
-    company_id = auth.require_company()
-    rows = (
+    company_id = auth.company_or_all()
+    q = (
         db.query(Customer)
         .options(joinedload(Customer.contacts))
-        .filter(Customer.company_id == company_id, Customer.organization_id == auth.organization_id)
-        .order_by(Customer.id.desc())
-        .all()
+        .filter(Customer.organization_id == auth.organization_id)
     )
-    return [_out(db, c, company_id) for c in rows]
+    if company_id is not None:
+        q = q.filter(Customer.company_id == company_id)
+    rows = q.order_by(Customer.id.desc()).all()
+    return [_out(db, c, c.company_id) for c in rows]
 
 
 @router.post("", response_model=CustomerOut)

@@ -4,7 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Sparkles, Users, Handshake, MapPin, Boxes, Truck, ShoppingCart,
   ReceiptText, Wallet, BarChart3, Settings, Menu, X, Check, ChevronDown, Bell, ClipboardList,
-  ChevronLeft, Scale, Banknote,
+  ChevronLeft, Scale, Banknote, History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCompany } from "@/lib/company-context";
@@ -14,6 +14,7 @@ import { useMe } from "@/lib/me-context";
 import { applyBrand } from "@/lib/brand";
 import { nameInitials } from "@/lib/format";
 import { ApprovalPopup, usePendingApprovals } from "@/components/erp/ApprovalPopup";
+import { InvoiceRequestPopup, useInvoiceRequests } from "@/components/erp/InvoiceRequestPopup";
 import { Badge } from "@/components/erp/ui-bits";
 
 function ProfileAvatar({
@@ -151,7 +152,7 @@ const navByRole: Record<string, NavSection[]> = {
       group: "Drive",
       items: [
         { to: "/", label: "Today", icon: LayoutDashboard },
-        { to: "/runs", label: "Runs", icon: Truck },
+        { to: "/history", label: "History", icon: History },
         { to: "/profile", label: "Profile", icon: Users },
       ],
     },
@@ -172,7 +173,7 @@ const SALES_TABS: NavItem[] = [
 
 const LOGISTICS_TABS: NavItem[] = [
   { to: "/", label: "Today", icon: LayoutDashboard },
-  { to: "/runs", label: "Runs", icon: Truck },
+  { to: "/history", label: "History", icon: History },
 ];
 
 function SalesPhoneShell({
@@ -360,7 +361,7 @@ function CompanySwitcher({ compact, hideThumb }: { compact?: boolean; hideThumb?
                   onClick={() => {
                     setFirm(o.id);
                     setOpen(false);
-                    if (o.id !== "all") window.location.reload();
+                    window.location.reload();
                   }}
                   className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-secondary"
                 >
@@ -396,6 +397,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { firm } = useCompany();
   const activeFirm = firms.find((f) => f.id === firm);
   const { items, dismiss, canApprove } = usePendingApprovals();
+  const { items: invoiceRequests, dismiss: dismissInvoice, canInvoice } = useInvoiceRequests();
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
 
   useEffect(() => {
     if (!getToken()) navigate({ to: "/login" });
@@ -406,6 +409,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (canApprove && items.length > 0) setApprovalOpen(true);
   }, [canApprove, items.length]);
+
+  // Auto-open when Accounts has orders waiting to invoice
+  useEffect(() => {
+    if (canInvoice && invoiceRequests.length > 0) setInvoiceOpen(true);
+  }, [canInvoice, invoiceRequests.length]);
 
   const role = me?.user.role || "";
   const roleLabel = role.replaceAll("_", " ") || (loading ? "…" : "Signed in");
@@ -418,6 +426,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const alerts = quietAlerts(firm).filter((a) => pathAllowed(a.to, activeNav));
   const alertBadge =
     (canApprove ? items.length : 0) +
+    (canInvoice ? invoiceRequests.length : 0) +
     alerts.filter((a) => a.count > 0 && a.tone !== "good").length;
 
   // Hide ≠ security, but don't let roles deep-link into modules they shouldn't see
@@ -598,6 +607,19 @@ export function AppShell({ children }: { children: ReactNode }) {
                       <Badge tone="warn">{items.length}</Badge>
                     </button>
                   )}
+                  {canInvoice && invoiceRequests.length > 0 && (
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2.5 text-left text-sm hover:bg-secondary/60"
+                      onClick={() => {
+                        setNotifOpen(false);
+                        setInvoiceOpen(true);
+                      }}
+                    >
+                      <span>Invoices to raise</span>
+                      <Badge tone="warn">{invoiceRequests.length}</Badge>
+                    </button>
+                  )}
                   <ul className="max-h-72 overflow-y-auto py-1">
                     {alerts.map((a) => (
                       <li key={a.id}>
@@ -656,6 +678,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         onClose={() => setApprovalOpen(false)}
         items={items}
         onDecided={(key) => dismiss(key)}
+      />
+      <InvoiceRequestPopup
+        open={invoiceOpen && invoiceRequests.length > 0}
+        onClose={() => setInvoiceOpen(false)}
+        items={invoiceRequests}
+        onDismiss={dismissInvoice}
       />
     </div>
   );

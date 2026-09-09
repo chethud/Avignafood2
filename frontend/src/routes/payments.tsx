@@ -15,6 +15,7 @@ export const Route = createFileRoute("/payments")({
 
 type InvoiceRow = {
   id: number;
+  company_id: number;
   customer_id: number;
   number: string;
   customer_name: string | null;
@@ -87,7 +88,8 @@ function Payments() {
   async function saveInvoicePay(e: React.FormEvent) {
     e.preventDefault();
     const amount = Number(form.amount);
-    if (!(amount > 0) || !form.invoice_id) {
+    const inv = open.find((i) => String(i.id) === form.invoice_id);
+    if (!(amount > 0) || !inv) {
       setError("Choose an invoice and enter a positive amount");
       return;
     }
@@ -96,8 +98,9 @@ function Payments() {
     try {
       await api("/api/v1/payments", {
         method: "POST",
+        companyId: inv.company_id,
         body: JSON.stringify({
-          invoice_id: Number(form.invoice_id),
+          invoice_id: inv.id,
           amount,
           method: form.method,
           reference: form.reference.trim() || null,
@@ -116,7 +119,8 @@ function Payments() {
   async function saveAllocate(e: React.FormEvent) {
     e.preventDefault();
     const amount = Number(form.amount);
-    if (!(amount > 0) || !form.customer_id) {
+    const sample = open.find((i) => String(i.customer_id) === form.customer_id);
+    if (!(amount > 0) || !sample) {
       setError("Choose a customer and enter a positive amount");
       return;
     }
@@ -125,8 +129,9 @@ function Payments() {
     try {
       await api("/api/v1/accounts/allocate", {
         method: "POST",
+        companyId: sample.company_id,
         body: JSON.stringify({
-          customer_id: Number(form.customer_id),
+          customer_id: sample.customer_id,
           amount,
           method: form.method,
           reference: form.reference.trim() || null,

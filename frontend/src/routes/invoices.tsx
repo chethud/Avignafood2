@@ -1,8 +1,8 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { money, waHref } from "@/lib/format";
-import { firms } from "@/lib/erp-data";
+import { firms, firmLabelByCompanyId } from "@/lib/erp-data";
 import { useCompany } from "@/lib/company-context";
 import { dueCountdown, payStatus, payStatusLabel } from "@/lib/accounts";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
@@ -13,6 +13,9 @@ export const Route = createFileRoute("/invoices")({
       { title: "Invoices · Avighna ERP" },
       { name: "description", content: "Generate GST invoices from loads that are almost ready to dispatch. Books stay in Tally Prime." },
     ],
+  }),
+  validateSearch: (search: Record<string, unknown>): { raise?: string } => ({
+    raise: typeof search.raise === "string" ? search.raise : undefined,
   }),
   component: Invoices,
 });
@@ -36,6 +39,8 @@ type Billable = {
 
 type BillableOrder = {
   sales_order_id: number;
+  company_id: number;
+  company_name?: string | null;
   customer_id: number;
   customer_name: string;
   address: string | null;
@@ -105,6 +110,8 @@ type InvoiceDraft = {
 
 function Invoices() {
   const { firm } = useCompany();
+  const navigate = useNavigate();
+  const { raise } = Route.useSearch();
   const company = firms.find((f) => f.id === firm);
   const [inbox, setInbox] = useState<Billable[]>([]);
   const [billable, setBillable] = useState<Billable[]>([]);
@@ -120,12 +127,13 @@ function Invoices() {
   const [status, setStatus] = useState("all");
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [month, setMonth] = useState("all");
+  const raisedFromPopup = useRef<string | null>(null);
 
   async function load() {
     try {
       const [notice, ready, issued, soReady] = await Promise.all([
-        api<Billable[]>("/api/v1/invoices/dispatch-inbox"),
-        api<Billable[]>("/api/v1/invoices/billable"),
+        api<Billable[]>("/api/v1/invoices/dispatch-inbox").catch(() => [] as Billable[]),
+        api<Billable[]>("/api/v1/invoices/billable").catch(() => [] as Billable[]),
         api<InvoiceRow[]>("/api/v1/invoices"),
         api<BillableOrder[]>("/api/v1/invoices/billable-orders").catch(() => [] as BillableOrder[]),
       ]);
@@ -176,8 +184,8 @@ function Invoices() {
       };
       type Prod = { id: number; name: string; gst_rate?: string | number };
       const [sos, products] = await Promise.all([
-        api<So[]>("/api/v1/sales-orders"),
-        api<Prod[]>("/api/v1/products").catch(() => [] as Prod[]),
+        api<So[]>("/api/v1/sales-orders", { companyId: o.company_id }),
+        api<Prod[]>("/api/v1/products", { companyId: o.company_id }).catch(() => [] as Prod[]),
       ]);
       const so = sos.find((x) => x.id === o.sales_order_id);
       const names = Object.fromEntries(products.map((p) => [p.id, p]));
@@ -210,6 +218,17 @@ function Invoices() {
     }
   }
 
+  useEffect(() => {
+    if (!raise || !orders.length || busy || pickOrder) return;
+    if (raisedFromPopup.current === raise) return;
+    const o = orders.find((x) => String(x.sales_order_id) === raise);
+    if (!o) return;
+    raisedFromPopup.current = raise;
+    void openInvoiceForm(o).then(() => {
+      void navigate({ to: "/invoices", search: {}, replace: true });
+    });
+  }, [raise, orders, busy, pickOrder, navigate]);
+
   async function generate() {
     if (!selected) return;
     setBusy(true);
@@ -240,6 +259,7 @@ function Invoices() {
     try {
       await api(`/api/v1/invoices/from-order/${pickOrder.sales_order_id}?override_credit=${override}`, {
         method: "POST",
+        companyId: pickOrder.company_id,
         body: JSON.stringify({
           invoice_date: draft.invoice_date,
           due_date: draft.due_date,
@@ -287,7 +307,7 @@ function Invoices() {
     <>
       <PageHeader
         title="Invoices"
-        subtitle="Ready to invoice shows Super Admin–approved orders. Enter bill details, then raise the invoice. After that Sales or Supervisor can allot a driver."
+        subtitle="Ready to invoice shows Super Admin–approved orders across companies when scope is All. Enter bill details, then raise the invoice."
       />
       {error && !selected && !pickOrder && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
@@ -299,9 +319,10 @@ function Invoices() {
       </div>
 
       <Panel title="Ready to invoice" hint="Enter invoice date, due date, rates and remarks, then raise the bill" className="mt-6">
-        <Table head={["Order", "Customer", "Lines", "Est. total", "Stage", "Credit", ""]}>
+        <Table head={["Company", "Order", "Customer", "Lines", "Est. total", "Stage", "Credit", ""]}>
           {orders.map((o) => (
             <tr key={o.sales_order_id}>
+              <Td className="text-muted-foreground">{o.company_name || firmLabelByCompanyId(o.company_id)}</Td>
               <Td className="font-medium">SO-{o.sales_order_id}</Td>
               <Td>{o.customer_name}</Td>
               <Td className="tabular-nums">{o.line_count}</Td>

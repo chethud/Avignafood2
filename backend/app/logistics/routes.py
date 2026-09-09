@@ -449,23 +449,48 @@ def ready_orders(
 def list_runs(
     on_date: date | None = Query(None),
     open_only: bool = Query(False, description="Open assignments for drivers (any company in org)"),
+    history_only: bool = Query(False, description="Completed / delivered trips for driver history"),
     auth: AuthContext = Depends(require_perms("dispatch.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    # Drivers (and open/history) see every allotted run in the org; others stay company-scoped
+    if auth.role == RoleName.LOGISTICS or open_only or history_only:
+        company_id = auth.company_or_all()
+    else:
+        company_id = auth.require_company()
     q = (
         db.query(LogisticsRun)
         .options(joinedload(LogisticsRun.stops))
         .filter(LogisticsRun.organization_id == auth.organization_id)
     )
-    # Drivers need every allotted run in the org; Sales/Supervisor stay company-scoped
-    if auth.role != RoleName.LOGISTICS and not open_only:
+    if auth.role != RoleName.LOGISTICS and not open_only and not history_only and company_id is not None:
         q = q.filter(LogisticsRun.company_id == company_id)
+    elif (
+        company_id is not None
+        and auth.role != RoleName.LOGISTICS
+        and (open_only or history_only)
+    ):
+        q = q.filter(LogisticsRun.company_id == company_id)
+    if history_only:
+        from sqlalchemy import or_, exists
+
+        done_stop = exists().where(
+            LogisticsStop.run_id == LogisticsRun.id,
+            LogisticsStop.status.in_(("delivered", "partial", "failed")),
+        )
+        q = q.filter(
+            or_(
+                LogisticsRun.status.in_(("completed", "delivered", "cancelled")),
+                done_stop,
+            )
+        )
+        rows = q.order_by(LogisticsRun.on_date.desc(), LogisticsRun.id.desc()).limit(100).all()
+        return [_run_out(db, r) for r in rows]
     if open_only:
-        q = q.filter(LogisticsRun.status.in_(OPEN_RUN + ("delivered",)))
+        q = q.filter(LogisticsRun.status.in_(OPEN_RUN))
     elif on_date:
         q = q.filter(LogisticsRun.on_date == on_date)
-    rows = q.order_by(LogisticsRun.on_date.asc(), LogisticsRun.id.desc()).all()
+    rows = q.order_by(LogisticsRun.on_date.asc(), LogisticsRun.id.asc()).all()
     return [_run_out(db, r) for r in rows]
 
 
@@ -792,13 +817,18 @@ def deliver_stop(
     auth: AuthContext = Depends(require_perms("deliveries.edit")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
     stop = db.query(LogisticsStop).filter(LogisticsStop.id == stop_id).first()
     if not stop:
         raise HTTPException(status_code=404, detail="Stop not found")
     run = db.query(LogisticsRun).options(joinedload(LogisticsRun.stops)).filter(LogisticsRun.id == stop.run_id).first()
-    if not run or run.company_id != company_id:
+    if not run or run.organization_id != auth.organization_id:
         raise HTTPException(status_code=404, detail="Stop not found")
+    company_id = run.company_id
+    if auth.role != RoleName.LOGISTICS:
+        scoped = auth.require_company()
+        if run.company_id != scoped:
+            raise HTTPException(status_code=404, detail="Stop not found")
+        company_id = scoped
     if (run.status or "") not in ("dispatched", "in_transit", "out_for_delivery", "partial"):
         raise HTTPException(status_code=400, detail="Start the run (Going) before recording delivery")
     outcome = body.outcome

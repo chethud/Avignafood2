@@ -2,8 +2,22 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
 import { useMe } from "@/lib/me-context";
-import { approvals, byFirm, inr } from "@/lib/erp-data";
+import { approvals, byFirm, firmLabelByCompanyId, inr } from "@/lib/erp-data";
 import { money } from "@/lib/format";
+import { cn } from "@/lib/utils";
+
+export type ApprovalLine = {
+  product_name: string;
+  unit?: string;
+  quantity: number;
+  on_hand: number;
+  extra_qty: number;
+  stock_ok: boolean;
+  selling_price: number;
+  wholesale_price: number;
+  requested_price: number;
+  below_wholesale: boolean;
+};
 
 export type PendingItem = {
   key: string;
@@ -12,16 +26,21 @@ export type PendingItem = {
   quoteId?: number;
   purchaseId?: number;
   orderId?: number;
+  companyId?: number;
+  companyName?: string;
   customer: string;
   product: string;
   qty: string;
   asked: number;
   floor: number;
   salesperson: string;
+  lines?: ApprovalLine[];
+  notes?: string | null;
 };
 
 type Quote = {
   id: number;
+  company_id: number;
   customer_id: number;
   status: string;
   notes: string | null;
@@ -30,6 +49,7 @@ type Quote = {
 
 type Purchase = {
   id: number;
+  company_id: number;
   customer_id: number;
   product: string;
   quantity: string | number;
@@ -38,19 +58,61 @@ type Purchase = {
   manufacturer?: string | null;
 };
 
+type OrderLine = {
+  product_id: number;
+  product_name?: string;
+  unit?: string;
+  quantity: number;
+  on_hand?: number;
+  extra_qty?: number;
+  stock_ok?: boolean;
+  unit_price: number;
+  requested_price?: number;
+  wholesale_price?: number;
+  selling_price?: number;
+  below_wholesale?: boolean;
+};
+
 type Order = {
   id: number;
+  company_id: number;
+  company_name?: string | null;
   customer_id: number;
   customer_name: string | null;
   status: string;
   ops_status: string;
-  lines: { product_id: number; quantity: number; unit_price: number }[];
+  notes?: string | null;
+  created_by_name?: string | null;
+  lines: OrderLine[];
 };
 
 type Customer = { id: number; name: string };
 
 /** Only Owner / Super Admin may approve — not Supervisor or other roles. */
 const canApproveRole = (role: string) => role === "super_admin" || role === "owner";
+
+function mapOrderLines(lines: OrderLine[]): ApprovalLine[] {
+  return lines.map((ln) => {
+    const qty = Number(ln.quantity) || 0;
+    const onHand = Number(ln.on_hand ?? 0);
+    const wholesale = Number(ln.wholesale_price ?? 0);
+    const selling = Number(ln.selling_price ?? wholesale);
+    const requested = Number(ln.requested_price ?? ln.unit_price ?? 0);
+    const extra = Number(ln.extra_qty ?? Math.max(0, qty - onHand));
+    return {
+      product_name: ln.product_name || `Product #${ln.product_id}`,
+      unit: ln.unit || "KG",
+      quantity: qty,
+      on_hand: onHand,
+      extra_qty: extra,
+      stock_ok: ln.stock_ok ?? onHand >= qty,
+      selling_price: selling,
+      wholesale_price: wholesale,
+      requested_price: requested,
+      below_wholesale: ln.below_wholesale ?? requested < wholesale,
+    };
+  });
+}
 
 export function usePendingApprovals() {
   const { me } = useMe();
@@ -82,6 +144,7 @@ export function usePendingApprovals() {
             source: "api" as const,
             kind: "quote" as const,
             quoteId: q.id,
+            companyId: q.company_id,
             customer: names[q.customer_id] || `Customer #${q.customer_id}`,
             product: line ? `Product #${line.product_id}` : "Quotation",
             qty: line ? `${line.quantity}` : "—",
@@ -97,6 +160,7 @@ export function usePendingApprovals() {
           source: "api" as const,
           kind: "purchase" as const,
           purchaseId: p.id,
+          companyId: p.company_id,
           customer: names[p.customer_id] || `Customer #${p.customer_id}`,
           product: p.product || "Purchase requirement",
           qty: String(p.quantity ?? "—"),
@@ -107,18 +171,23 @@ export function usePendingApprovals() {
       const orderItems: PendingItem[] = orders
         .filter((o) => o.status === "draft" && (o.ops_status === "pending_approval" || !o.ops_status))
         .map((o) => {
-          const line = o.lines[0];
+          const lines = mapOrderLines(o.lines || []);
+          const first = lines[0];
           return {
             key: `o-${o.id}`,
             source: "api" as const,
             kind: "order" as const,
             orderId: o.id,
+            companyId: o.company_id,
+            companyName: o.company_name || firmLabelByCompanyId(o.company_id),
             customer: o.customer_name || names[o.customer_id] || `Customer #${o.customer_id}`,
-            product: line ? `Product #${line.product_id}` : "Sales order",
-            qty: line ? `${line.quantity}` : "—",
-            asked: line ? Number(line.unit_price) : 0,
-            floor: 0,
-            salesperson: `SO-${o.id}`,
+            product: first?.product_name || (lines.length > 1 ? `${lines.length} products` : "Sales order"),
+            qty: first ? `${first.quantity} ${first.unit}` : "—",
+            asked: first?.requested_price ?? 0,
+            floor: first?.wholesale_price ?? 0,
+            salesperson: o.created_by_name || "Sales",
+            lines,
+            notes: o.notes,
           };
         });
       const fromApi: PendingItem[] = [...orderItems, ...quoteItems, ...purchaseItems];
@@ -160,6 +229,98 @@ export function usePendingApprovals() {
   return { items, loading, refresh, dismiss, canApprove: me ? canApproveRole(me.user.role) : false };
 }
 
+function OrderApprovalBody({ item }: { item: PendingItem }) {
+  const lines = item.lines || [];
+  return (
+    <div className="mt-4 space-y-3">
+      <dl className="grid grid-cols-2 gap-2 text-sm">
+        <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+          <dt className="text-xs text-muted-foreground">Company</dt>
+          <dd className="mt-0.5 font-medium">{item.companyName || firmLabelByCompanyId(item.companyId)}</dd>
+        </div>
+        <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+          <dt className="text-xs text-muted-foreground">From salesperson</dt>
+          <dd className="mt-0.5 font-medium">{item.salesperson}</dd>
+        </div>
+        <div className="rounded-xl bg-secondary/60 px-3 py-2.5 col-span-2">
+          <dt className="text-xs text-muted-foreground">Customer (for whom)</dt>
+          <dd className="mt-0.5 font-medium">{item.customer}</dd>
+        </div>
+      </dl>
+
+      {lines.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No line items on this order.</p>
+      ) : (
+        <ul className="space-y-3">
+          {lines.map((ln, idx) => (
+            <li key={`${ln.product_name}-${idx}`} className="rounded-xl border border-border bg-background/80 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <p className="font-medium leading-snug">{ln.product_name}</p>
+                {!ln.stock_ok && (
+                  <span className="shrink-0 rounded-md bg-destructive/10 px-2 py-0.5 text-[0.65rem] font-medium text-destructive">
+                    Extra qty
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                <div>
+                  <p className="text-muted-foreground">Ordered</p>
+                  <p className="mt-0.5 font-medium tabular-nums">
+                    {ln.quantity} {ln.unit}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">In stock</p>
+                  <p className={cn("mt-0.5 font-medium tabular-nums", !ln.stock_ok && "text-destructive")}>
+                    {ln.on_hand} {ln.unit}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Extra</p>
+                  <p className={cn("mt-0.5 font-medium tabular-nums", ln.extra_qty > 0 && "text-destructive")}>
+                    {ln.extra_qty > 0 ? `+${ln.extra_qty}` : "0"} {ln.unit}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2 border-t border-border/70 pt-2 text-xs">
+                <div>
+                  <p className="text-muted-foreground">Selling</p>
+                  <p className="mt-0.5 font-medium tabular-nums">{money(ln.selling_price)}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Wholesale</p>
+                  <p className="mt-0.5 font-medium tabular-nums">{money(ln.wholesale_price)}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Requested</p>
+                  <p
+                    className={cn(
+                      "mt-0.5 font-medium tabular-nums",
+                      ln.below_wholesale ? "text-warning" : "text-foreground",
+                    )}
+                  >
+                    {money(ln.requested_price)}
+                  </p>
+                </div>
+              </div>
+              {ln.below_wholesale && (
+                <p className="mt-2 text-[0.7rem] text-destructive">
+                  Requested {inr(ln.wholesale_price - ln.requested_price)} below wholesale
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {item.notes ? <p className="text-xs text-muted-foreground">Notes: {item.notes}</p> : null}
+      <p className="text-xs text-muted-foreground">
+        Approve so Accounts can raise the invoice. Sales or Supervisor allots the driver after that.
+      </p>
+    </div>
+  );
+}
+
 export function ApprovalPopup({
   open,
   onClose,
@@ -180,13 +341,14 @@ export function ApprovalPopup({
   async function decide(action: "approve" | "reject") {
     setBusy(current.key);
     setError("");
+    const opts = { method: "POST" as const, companyId: current.companyId };
     try {
       if (current.source === "api" && current.orderId) {
-        await api(`/api/v1/sales-orders/${current.orderId}/${action}`, { method: "POST" });
+        await api(`/api/v1/sales-orders/${current.orderId}/${action}`, opts);
       } else if (current.source === "api" && current.purchaseId) {
-        await api(`/api/v1/purchases/${current.purchaseId}/${action}`, { method: "POST" });
+        await api(`/api/v1/purchases/${current.purchaseId}/${action}`, opts);
       } else if (current.source === "api" && current.quoteId) {
-        await api(`/api/v1/quotations/${current.quoteId}/${action}`, { method: "POST" });
+        await api(`/api/v1/quotations/${current.quoteId}/${action}`, opts);
       }
       onDecided(current.key, action);
       if (items.length <= 1) onClose();
@@ -197,6 +359,8 @@ export function ApprovalPopup({
     }
   }
 
+  const wide = current.kind === "order";
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
       <button className="absolute inset-0 bg-foreground/40 backdrop-blur-[2px]" aria-label="Close" onClick={onClose} />
@@ -204,88 +368,80 @@ export function ApprovalPopup({
         role="dialog"
         aria-modal="true"
         aria-labelledby="approval-title"
-        className="relative z-10 w-full max-h-[88dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 shadow-[var(--shadow-soft)] sm:max-w-md sm:rounded-2xl"
+        className={cn(
+          "relative z-10 w-full max-h-[88dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 shadow-[var(--shadow-soft)] sm:rounded-2xl",
+          wide ? "sm:max-w-lg" : "sm:max-w-md",
+        )}
       >
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border sm:hidden" />
         <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">
           {current.kind === "order"
-            ? "Sales order"
+            ? "Sales order request"
             : current.kind === "purchase"
               ? "Purchase requirement"
               : "Price approval"}{" "}
           · {items.length} waiting
         </p>
         <h2 id="approval-title" className="mt-1 text-xl font-semibold tracking-tight">
-          {current.customer}
+          {current.kind === "order" ? `Order for ${current.customer}` : current.customer}
         </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {current.kind === "order"
-            ? `${current.salesperson} · Sales created this order`
-            : current.kind === "purchase"
+        {current.kind !== "order" && (
+          <p className="mt-1 text-sm text-muted-foreground">
+            {current.kind === "purchase"
               ? `${current.salesperson} · manufacturer stock`
               : `${current.salesperson} · below floor rate`}
-        </p>
+          </p>
+        )}
 
-        <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-            <dt className="text-xs text-muted-foreground">Product</dt>
-            <dd className="mt-0.5 font-medium">{current.product}</dd>
-          </div>
-          <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-            <dt className="text-xs text-muted-foreground">Qty</dt>
-            <dd className="mt-0.5 font-medium tabular-nums">{current.qty}</dd>
-          </div>
-          {current.kind === "purchase" ? (
-            <>
+        {current.kind === "order" ? (
+          <OrderApprovalBody item={current} />
+        ) : (
+          <>
+            <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Type</dt>
-                <dd className="mt-0.5 font-medium">Purchase requirement</dd>
+                <dt className="text-xs text-muted-foreground">Product</dt>
+                <dd className="mt-0.5 font-medium">{current.product}</dd>
               </div>
               <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Ref</dt>
-                <dd className="mt-0.5 font-medium">{current.salesperson}</dd>
+                <dt className="text-xs text-muted-foreground">Qty</dt>
+                <dd className="mt-0.5 font-medium tabular-nums">{current.qty}</dd>
               </div>
-            </>
-          ) : current.kind === "order" ? (
-            <>
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Asked</dt>
-                <dd className="mt-0.5 font-medium tabular-nums">{money(current.asked)}</dd>
-              </div>
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Next</dt>
-                <dd className="mt-0.5 font-medium">Accounts invoice</dd>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Asked</dt>
-                <dd className="mt-0.5 font-medium tabular-nums text-warning">{money(current.asked)}</dd>
-              </div>
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Floor</dt>
-                <dd className="mt-0.5 font-medium tabular-nums">{money(current.floor)}</dd>
-              </div>
-            </>
-          )}
-        </dl>
+              {current.kind === "purchase" ? (
+                <>
+                  <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                    <dt className="text-xs text-muted-foreground">Type</dt>
+                    <dd className="mt-0.5 font-medium">Purchase requirement</dd>
+                  </div>
+                  <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                    <dt className="text-xs text-muted-foreground">Ref</dt>
+                    <dd className="mt-0.5 font-medium">{current.salesperson}</dd>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                    <dt className="text-xs text-muted-foreground">Asked</dt>
+                    <dd className="mt-0.5 font-medium tabular-nums text-warning">{money(current.asked)}</dd>
+                  </div>
+                  <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                    <dt className="text-xs text-muted-foreground">Floor</dt>
+                    <dd className="mt-0.5 font-medium tabular-nums">{money(current.floor)}</dd>
+                  </div>
+                </>
+              )}
+            </dl>
 
-        {current.kind !== "purchase" && current.kind !== "order" && current.asked < current.floor && (
-          <p className="mt-3 text-xs text-destructive">
-            {inr(current.floor - current.asked)} below floor
-          </p>
+            {current.kind !== "purchase" && current.asked < current.floor && (
+              <p className="mt-3 text-xs text-destructive">{inr(current.floor - current.asked)} below floor</p>
+            )}
+            {current.kind === "purchase" && (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Approve so Supervisor can receive from the manufacturer and book inward + batch.
+              </p>
+            )}
+          </>
         )}
-        {current.kind === "order" && (
-          <p className="mt-3 text-xs text-muted-foreground">
-            Approve so Accounts can enter invoice details and raise the bill. Sales or Supervisor allots the driver after that.
-          </p>
-        )}
-        {current.kind === "purchase" && (
-          <p className="mt-3 text-xs text-muted-foreground">
-            Approve so Supervisor can receive from the manufacturer and book inward + batch.
-          </p>
-        )}
+
         {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
 
         <div className="mt-5 grid grid-cols-2 gap-2">

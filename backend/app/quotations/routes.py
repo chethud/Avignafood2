@@ -44,14 +44,15 @@ def list_quotations(
     auth: AuthContext = Depends(require_perms("quotations.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    rows = (
+    company_id = auth.company_or_all()
+    q = (
         db.query(Quotation)
         .options(joinedload(Quotation.lines))
-        .filter(Quotation.company_id == company_id, Quotation.organization_id == auth.organization_id)
-        .order_by(Quotation.id.desc())
-        .all()
+        .filter(Quotation.organization_id == auth.organization_id)
     )
+    if company_id is not None:
+        q = q.filter(Quotation.company_id == company_id)
+    rows = q.order_by(Quotation.id.desc()).all()
     names = {
         c.id: c.name
         for c in db.query(Customer).filter(Customer.id.in_({r.customer_id for r in rows} or {0})).all()
