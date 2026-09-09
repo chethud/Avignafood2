@@ -1,5 +1,6 @@
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
 
 
 def _normalize_database_url(url: str) -> str:
@@ -25,6 +26,18 @@ class Settings(BaseSettings):
         if isinstance(v, str) and v:
             return _normalize_database_url(v)
         return v
+
+    @model_validator(mode="after")
+    def require_remote_database_on_render(self) -> "Settings":
+        # Render sets RENDER=true; without DATABASE_URL we would hit localhost and crash obscurely
+        on_render = os.getenv("RENDER") == "true" or bool(os.getenv("RENDER_SERVICE_ID"))
+        if on_render and ("localhost" in self.database_url or "127.0.0.1" in self.database_url):
+            raise ValueError(
+                "DATABASE_URL is missing or still points at localhost. "
+                "On Render: create a PostgreSQL database, then set DATABASE_URL on this web service "
+                "to the database Internal Database URL, and redeploy."
+            )
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:
