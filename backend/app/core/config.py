@@ -18,13 +18,23 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://avighnya:avighnya@localhost:5432/avighnya"
     secret_key: str = "change-me-in-production-avighnya-foods-secret"
     access_token_expire_minutes: int = 60 * 12
-    cors_origins: str = "http://localhost:3000"
+    # Empty CORS_ORIGINS on Render (Blueprint sync:false) must not wipe this default
+    cors_origins: str = (
+        "http://localhost:3000,http://localhost:3001,https://avignafood2.vercel.app"
+    )
 
     @field_validator("database_url", mode="before")
     @classmethod
     def normalize_db_url(cls, v: object) -> object:
         if isinstance(v, str) and v:
             return _normalize_database_url(v)
+        return v
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def empty_cors_uses_default(cls, v: object) -> object:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "http://localhost:3000,http://localhost:3001,https://avignafood2.vercel.app"
         return v
 
     @model_validator(mode="after")

@@ -24,5 +24,4 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: CORS_ORIGINS
-        # After Vercel: set to https://YOUR-APP.vercel.app (comma-separated OK)
-        sync: false
+        value: "http://localhost:3000,http://localhost:3001,https://avignafood2.vercel.app"

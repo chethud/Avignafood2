@@ -267,9 +267,9 @@ def _sync_role_user(
             db.flush()
             perm_map[code] = p.id
     wanted = ROLE_PERMS[role_name]
-    assert isinstance(wanted, list)
+    codes = list(perm_map.keys()) if wanted == "*" else list(wanted)
     db.query(RolePermission).filter(RolePermission.role_id == role.id).delete()
-    for code in wanted:
+    for code in codes:
         if code in perm_map:
             db.add(RolePermission(role_id=role.id, permission_id=perm_map[code]))
 
@@ -291,11 +291,13 @@ def _sync_role_user(
         print(f"{full_name} user created: {email} / {password}")
     elif user:
         user.role_id = role.id
+        user.is_active = True
+        user.hashed_password = hash_password(password)
         existing = {uc.company_id for uc in db.query(UserCompany).filter(UserCompany.user_id == user.id).all()}
         for c in companies:
             if c.id not in existing:
                 db.add(UserCompany(user_id=user.id, company_id=c.id))
-        print(f"{full_name} user refreshed")
+        print(f"{full_name} user refreshed: {email} / {password}")
     db.commit()
 
 
@@ -1420,6 +1422,20 @@ def seed() -> None:
                 email="logistics@avighnya.local",
                 full_name="Logistics",
                 password="logistics123",
+            )
+            _sync_role_user(
+                db,
+                role_name=RoleName.SUPER_ADMIN,
+                email="admin@avighnya.local",
+                full_name="Super Admin",
+                password="admin123",
+            )
+            _sync_role_user(
+                db,
+                role_name=RoleName.OWNER,
+                email="owner@avighnya.local",
+                full_name="Owner",
+                password="owner123",
             )
             _sync_role_perms(db)
             _sync_vehicles(db)
