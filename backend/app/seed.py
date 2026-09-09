@@ -1441,14 +1441,11 @@ def seed() -> None:
             _sync_vehicles(db)
             _sync_demo_customers(db)
             _sync_demo_products(db)
-            if _should_reset_demo(db):
+            # Hosted/free deploys: wipe transactional dummy rows; do not re-seed them
+            if engine.dialect.name == "postgresql":
                 _clear_demo_transactions(db)
                 _sync_demo_products(db)
-            _sync_demo_logistics(db)
-            _sync_demo_accounts(db)
-            _sync_demo_sales(db)
-            _sync_demo_accounts_extra(db)
-            print("Dummy data refreshed")
+            print("Seed refreshed (users/master data only; dummy transactions cleared)")
             return
 
         for code, desc in PERMISSIONS:
@@ -1569,15 +1566,14 @@ def seed() -> None:
         _sync_vehicles(db)
         _sync_demo_customers(db)
         _sync_demo_products(db)
-        _sync_demo_logistics(db)
-        _sync_demo_accounts(db)
-        _sync_demo_sales(db)
-        _sync_demo_accounts_extra(db)
+        # No logistics/sales/accounts dummy transactions — clean slate for demo hosting
         print(
-            "Seed complete: admin@avighnya.local / admin123 · "
+            "Seed complete (clean): admin@avighnya.local / admin123 · "
+            "sales@avighnya.local / sales123 · "
             "accounts@avighnya.local / accounts123 · "
             "supervisor@avighnya.local / super123 · "
-            "logistics@avighnya.local / logistics123"
+            "logistics@avighnya.local / logistics123 · "
+            "owner@avighnya.local / owner123"
         )
     finally:
         db.close()
