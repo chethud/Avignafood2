@@ -198,6 +198,8 @@ def _ensure_column(table: str, column: str, ddl: str) -> None:
     # ponytail: create_all won't add columns to existing tables
     from sqlalchemy import text
 
+    if engine.dialect.name != "postgresql":
+        return
     with engine.begin() as conn:
         exists = conn.execute(
             text(
@@ -1381,8 +1383,9 @@ def _sync_demo_accounts_extra(db) -> None:
 def seed() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_sales_schema(engine)
-    ensure_logistics_schema(engine)
-    ensure_accounts_schema(engine)
+    if engine.dialect.name == "postgresql":
+        ensure_logistics_schema(engine)
+        ensure_accounts_schema(engine)
     _ensure_logo_column()
     db = SessionLocal()
     try:
