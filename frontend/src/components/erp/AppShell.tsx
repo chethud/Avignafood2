@@ -102,6 +102,7 @@ const navByRole: Record<string, NavSection[]> = {
         { to: "/leads", label: "Leads", icon: Sparkles },
         { to: "/customers", label: "Customers", icon: Users },
         { to: "/sales", label: "Quotes & orders", icon: Handshake },
+        { to: "/ops", label: "Allot driver", icon: ClipboardList },
         { to: "/inventory", label: "Inventory", icon: Boxes },
         { to: "/profile", label: "Profile", icon: Users },
       ],
@@ -140,7 +141,7 @@ const SALES_TABS: NavItem[] = [
   { to: "/", label: "Today", icon: LayoutDashboard },
   { to: "/field", label: "Visit", icon: MapPin },
   { to: "/inventory", label: "Inventory", icon: Boxes },
-  { to: "/collection", label: "Collection", icon: Wallet },
+  { to: "/ops", label: "Allot", icon: Truck },
   { to: "/sales", label: "Orders", icon: ClipboardList },
 ];
 

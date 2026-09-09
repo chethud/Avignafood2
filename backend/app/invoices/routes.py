@@ -20,7 +20,14 @@ from app.core.models import (
     SalesOrder,
     SalesOrderStatus,
 )
-from app.core.schemas import BillableLoadOut, BillableOrderOut, ClientAccountOut, ClientLedgerOut, InvoiceOut
+from app.core.schemas import (
+    BillableLoadOut,
+    BillableOrderOut,
+    ClientAccountOut,
+    ClientLedgerOut,
+    InvoiceFromOrderIn,
+    InvoiceOut,
+)
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -619,7 +626,9 @@ def invoice_from_order(
     auth: AuthContext = Depends(require_perms("invoices.create")),
     db: Session = Depends(get_db),
     override_credit: bool = Query(False),
+    body: InvoiceFromOrderIn | None = None,
 ):
+    """Accounts opens Ready to invoice, enters bill details, then raises the GST invoice."""
     company_id = auth.require_company()
     so = (
         db.query(SalesOrder)
@@ -641,18 +650,32 @@ def invoice_from_order(
 
     company = db.query(Company).filter(Company.id == company_id).first()
     customer = db.query(Customer).filter(Customer.id == so.customer_id).first()
+    adjustments = {
+        ln.product_id: ln for ln in (body.lines or []) if body and body.lines
+    } if body else {}
 
     subtotal = Decimal("0")
     tax_amount = Decimal("0")
     priced: list[tuple] = []
     for ln in so.lines:
         product = db.query(Product).filter(Product.id == ln.product_id).first()
-        gst_rate = (product.gst_rate if product else Decimal("0")) or Decimal("0")
-        line_sub = ln.quantity * ln.unit_price
+        adj = adjustments.get(ln.product_id)
+        qty = adj.quantity if adj and adj.quantity is not None else ln.quantity
+        price = adj.unit_price if adj and adj.unit_price is not None else ln.unit_price
+        gst_rate = (
+            adj.gst_rate
+            if adj and adj.gst_rate is not None
+            else ((product.gst_rate if product else Decimal("0")) or Decimal("0"))
+        )
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail=f"Quantity must be positive for product {ln.product_id}")
+        if price < 0:
+            raise HTTPException(status_code=400, detail=f"Unit price cannot be negative for product {ln.product_id}")
+        line_sub = qty * price
         line_tax = line_sub * gst_rate / Decimal("100")
         subtotal += line_sub
         tax_amount += line_tax
-        priced.append((ln, gst_rate, line_sub, line_tax))
+        priced.append((ln.product_id, qty, price, gst_rate, line_sub, line_tax))
 
     due = _customer_outstanding(db, company_id, so.customer_id)
     limit = (customer.credit_limit if customer else Decimal("0")) or Decimal("0")
@@ -663,26 +686,47 @@ def invoice_from_order(
             detail=f"CREDIT LIMIT EXCEEDED: outstanding {due} + invoice {subtotal + tax_amount} = {projected} over limit {limit}",
         )
 
+    inv_date = body.invoice_date if body and body.invoice_date else date.today()
+    credit_days = (
+        body.credit_days
+        if body and body.credit_days is not None
+        else (customer.credit_days if customer else 30)
+    )
+    if credit_days is None:
+        credit_days = 30
+    due_date = body.due_date if body and body.due_date else inv_date + timedelta(days=int(credit_days))
+    number = (body.number or "").strip() if body and body.number else ""
+    if number:
+        clash = (
+            db.query(Invoice)
+            .filter(Invoice.company_id == company_id, Invoice.number == number)
+            .first()
+        )
+        if clash:
+            raise HTTPException(status_code=400, detail=f"Invoice number {number} already exists")
+    else:
+        number = _next_number(db, company)
+
     inv = Invoice(
         organization_id=auth.organization_id,
         company_id=company_id,
         customer_id=so.customer_id,
         sales_order_id=so.id,
-        number=_next_number(db, company),
-        invoice_date=date.today(),
-        due_date=date.today() + timedelta(days=customer.credit_days if customer else 30),
+        number=number,
+        invoice_date=inv_date,
+        due_date=due_date,
         status=InvoiceStatus.OPEN,
     )
     db.add(inv)
     db.flush()
 
-    for ln, gst_rate, line_sub, line_tax in priced:
+    for product_id, qty, price, gst_rate, line_sub, line_tax in priced:
         db.add(
             InvoiceLine(
                 invoice_id=inv.id,
-                product_id=ln.product_id,
-                quantity=ln.quantity,
-                unit_price=ln.unit_price,
+                product_id=product_id,
+                quantity=qty,
+                unit_price=price,
                 gst_rate=gst_rate,
                 line_total=line_sub + line_tax,
             )
@@ -694,6 +738,9 @@ def invoice_from_order(
     so.status = SalesOrderStatus.INVOICED
     if (so.ops_status or "") not in ("allocated", "dispatched", "ready", "shortage", "procuring"):
         so.ops_status = "pending_verify"
+    remarks = (body.remarks or "").strip() if body else ""
+    if remarks:
+        so.notes = f"{(so.notes or '').strip()}\n[Invoice] {remarks}".strip()
     write_audit(
         db,
         action="create",
@@ -702,7 +749,7 @@ def invoice_from_order(
         organization_id=auth.organization_id,
         company_id=company_id,
         user_id=auth.user.id,
-        detail=inv.number,
+        detail=f"{inv.number}" + (f" · {remarks}" if remarks else ""),
     )
     db.commit()
     inv = db.query(Invoice).options(joinedload(Invoice.lines)).filter(Invoice.id == inv.id).first()

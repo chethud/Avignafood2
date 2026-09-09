@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { useCompany } from "@/lib/company-context";
 import { useMe } from "@/lib/me-context";
-import { inr } from "@/lib/erp-data";
+import { approvals, byFirm, inr } from "@/lib/erp-data";
 import { money } from "@/lib/format";
 
 export type PendingItem = {
@@ -53,6 +54,7 @@ const canApproveRole = (role: string) => role === "super_admin" || role === "own
 
 export function usePendingApprovals() {
   const { me } = useMe();
+  const { firm } = useCompany();
   const [items, setItems] = useState<PendingItem[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -140,7 +142,7 @@ export function usePendingApprovals() {
     } finally {
       setLoading(false);
     }
-  }, [me]);
+  }, [me, firm]);
 
   useEffect(() => {
     refresh();
@@ -276,7 +278,7 @@ export function ApprovalPopup({
         )}
         {current.kind === "order" && (
           <p className="mt-3 text-xs text-muted-foreground">
-            Approve so Accounts can raise the invoice. Supervisor allots the driver after that.
+            Approve so Accounts can enter invoice details and raise the bill. Sales or Supervisor allots the driver after that.
           </p>
         )}
         {current.kind === "purchase" && (

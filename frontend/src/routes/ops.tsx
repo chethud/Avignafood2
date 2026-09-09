@@ -11,7 +11,7 @@ export const Route = createFileRoute("/ops")({
       { title: "Order desk · Avighna ERP" },
       {
         name: "description",
-        content: "Supervisor desk: verify stock, raise purchase, receive batch, allocate and book vehicle slots.",
+        content: "Order desk: verify stock, raise purchase, receive batch, allot driver (Sales or Supervisor).",
       },
     ],
   }),
@@ -171,7 +171,7 @@ function OrderDesk() {
     <>
       <PageHeader
         title="Order desk"
-        subtitle="Invoiced sales orders. Confirm stock, then allot a driver. Logistics only drives what you assign."
+        subtitle="Invoiced sales orders. Confirm stock, then allot a driver (Sales or Supervisor). Logistics only drives what you assign."
       />
       {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
@@ -213,7 +213,7 @@ function OrderDesk() {
       {!visible.length && (
         <Panel>
           <p className="text-sm text-muted-foreground">
-            No orders in this step. Accounts must raise the invoice first. Then the order lands here for you to confirm and allot a driver.
+            No orders in this step. Accounts must raise the invoice first. Then Sales or Supervisor can confirm stock and allot a driver.
           </p>
         </Panel>
       )}

@@ -27,8 +27,6 @@ from app.logistics.ensure_schema import ensure_logistics_schema
 from app.logistics.routes import router as logistics_router
 from app.users.routes import router as users_router
 from app.deliveries.routes import router as deliveries_router
-from app.logistics.ensure_schema import ensure_logistics_schema
-from app.logistics.routes import router as logistics_router
 from app.vehicles.routes import router as vehicles_router
 from app.visits.routes import router as visits_router
 import app.core.models  # noqa: F401 — register tables
@@ -37,8 +35,10 @@ app = FastAPI(title="Avighnya Foods API", version="0.1.0")
 # ponytail: create missing tables without a migration tool
 Base.metadata.create_all(bind=engine)
 ensure_sales_schema(engine)
-ensure_logistics_schema(engine)
-ensure_accounts_schema(engine)
+# Postgres-only DDL (SERIAL / TIMESTAMP WITH TIME ZONE) — skip on local SQLite
+if engine.dialect.name == "postgresql":
+    ensure_logistics_schema(engine)
+    ensure_accounts_schema(engine)
 
 app.add_middleware(
     CORSMiddleware,

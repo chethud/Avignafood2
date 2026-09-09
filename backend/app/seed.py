@@ -129,6 +129,8 @@ ROLE_PERMS: dict[RoleName, list[str] | str] = {
         "sales.view",
         "sales.create",
         "sales.edit",
+        "dispatch.view",
+        "dispatch.create",
         "invoices.view",
         "payments.view",
     ],

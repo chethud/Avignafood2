@@ -851,8 +851,6 @@ def set_pod(
         raise HTTPException(status_code=404, detail="Stop not found")
     if stop.status not in ("delivered", "partial"):
         raise HTTPException(status_code=400, detail="Record delivery before POD")
-    if not body.pod_url and not body.signature_url:
-        raise HTTPException(status_code=400, detail="Add a photo or signature")
     if body.pod_url:
         stop.pod_url = body.pod_url
     if body.signature_url:
@@ -861,6 +859,11 @@ def set_pod(
         stop.receiver_name = body.receiver_name
     if body.remarks:
         stop.remarks = body.remarks
+    # Photo/signature optional — receiver name alone is enough to close POD
+    if not stop.pod_url and not stop.signature_url:
+        if not (stop.receiver_name or "").strip():
+            raise HTTPException(status_code=400, detail="Enter receiver name (photo optional)")
+        stop.pod_url = "ack:receiver"
     db.commit()
     return _run_out(db, run)
 

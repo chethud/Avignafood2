@@ -578,6 +578,24 @@ class AllocateDispatchIn(BaseModel):
     vehicle_id: int | None = None
 
 
+class InvoiceLineAdjustIn(BaseModel):
+    product_id: int
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    gst_rate: Decimal | None = None
+
+
+class InvoiceFromOrderIn(BaseModel):
+    """Accounts enters bill details before raising the invoice from an approved SO."""
+
+    invoice_date: date | None = None
+    due_date: date | None = None
+    credit_days: int | None = None
+    number: str | None = None
+    remarks: str | None = None
+    lines: list[InvoiceLineAdjustIn] | None = None
+
+
 # ---- Invoices / Payments ----
 class InvoiceOut(ORMModel):
     id: int

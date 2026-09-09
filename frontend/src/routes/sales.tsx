@@ -100,7 +100,7 @@ function SalesWorkspace() {
 
   return (
     <>
-      <PageHeader title="Orders" subtitle="Create an order and it goes to Super Admin. After they approve, Accounts raises the invoice, then Supervisor allots the driver." />
+      <PageHeader title="Orders" subtitle="Create an order → Super Admin approves → Accounts invoices → you or Supervisor can allot the driver." />
       <div className="mb-4 grid grid-cols-2 gap-2">
         <button
           type="button"

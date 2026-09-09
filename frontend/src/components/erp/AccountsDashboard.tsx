@@ -123,7 +123,7 @@ export function AccountsDashboard() {
 
       <Panel title="Accounts flow" className="mt-6">
         <p className="mb-4 text-sm text-muted-foreground">
-          Super Admin approves → you raise invoice → Supervisor allots driver → delivery → payment → receivable closed.
+          Super Admin approves → you enter invoice details & raise bill → Sales/Supervisor allots driver → delivery → payment → receivable closed.
         </p>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <Link to="/invoices" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">

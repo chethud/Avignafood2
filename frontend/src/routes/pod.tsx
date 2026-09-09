@@ -61,13 +61,21 @@ function Pod() {
   }
 
   async function save() {
-    if (!active || !url) return;
+    if (!active) return;
+    const name = receiver.trim();
+    if (!url && !name) {
+      setError("Enter receiver name (photo optional)");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       await api(`/api/v1/logistics/stops/${active.stop.id}/pod`, {
         method: "POST",
-        body: JSON.stringify({ pod_url: url, receiver_name: receiver.trim() || null }),
+        body: JSON.stringify({
+          pod_url: url || null,
+          receiver_name: name || null,
+        }),
       });
       setActive(null);
       setUrl("");
@@ -87,7 +95,7 @@ function Pod() {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-semibold">POD</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Photo and receiver name after delivery.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Confirm delivery with receiver name; photo is optional.</p>
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -159,7 +167,7 @@ function Pod() {
               )}
             >
               <Camera className="size-5" />
-              {url ? "Photo attached" : "Take photo"}
+              {url ? "Photo attached" : "Take photo (optional)"}
             </button>
             {url && (
               <img src={mediaUrl(url)} alt="POD" className="mt-2 max-h-40 w-full rounded-xl object-cover" />
@@ -170,6 +178,7 @@ function Pod() {
                 className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2"
                 value={receiver}
                 onChange={(e) => setReceiver(e.target.value)}
+                placeholder="Required if no photo"
               />
             </label>
             <div className="mt-4 grid grid-cols-2 gap-2">
@@ -182,7 +191,7 @@ function Pod() {
               </button>
               <button
                 type="button"
-                disabled={busy || !url}
+                disabled={busy || (!url && !receiver.trim())}
                 onClick={() => void save()}
                 className="min-h-11 rounded-xl bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-60"
               >

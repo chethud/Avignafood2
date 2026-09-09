@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app.audit.service import write_audit
-from app.core.database import get_db
+from app.core.database import engine, get_db
 from app.core.deps import AuthContext, require_owner, require_perms
 from app.core.models import (
     Customer,
@@ -33,6 +33,7 @@ from app.core.schemas import (
     SalesOrderOut,
 )
 from app.inventory.routes import _default_warehouse
+from app.sales.ensure_schema import ensure_sales_schema
 from app.sales.ops import desk_out, line_stock, on_hand, outstanding_rows, qty_short
 
 router = APIRouter(prefix="/sales-orders", tags=["sales"])
@@ -215,10 +216,11 @@ def create_order(
     return _out(so, db=db)
 
 
-def _credit_hold(db: Session, company_id: int, so: SalesOrder) -> None:
+def _credit_hold(db: Session, company_id: int, so: SalesOrder) -> str | None:
+    """Return a credit warning for audit; never blocks Owner / Super Admin approval."""
     customer = db.query(Customer).filter(Customer.id == so.customer_id).first()
     if not customer:
-        return
+        return None
     open_invs = (
         db.query(Invoice)
         .filter(
@@ -232,13 +234,12 @@ def _credit_hold(db: Session, company_id: int, so: SalesOrder) -> None:
     overdue = any(i.due_date and i.due_date < datetime.now(timezone.utc).date() for i in open_invs)
     order_value = sum((ln.quantity * ln.unit_price for ln in so.lines), Decimal("0"))
     limit = customer.credit_limit or Decimal("0")
+    notes: list[str] = []
     if overdue:
-        raise HTTPException(status_code=400, detail="Credit hold — customer has overdue invoices")
+        notes.append("customer has overdue invoices")
     if limit > 0 and (outstanding + order_value) > limit:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Credit limit exceeded — outstanding {outstanding} + order {order_value} > limit {limit}",
-        )
+        notes.append(f"exposure {outstanding + order_value} exceeds limit {limit}")
+    return "; ".join(notes) if notes else None
 
 
 @router.post("/{order_id}/confirm", response_model=SalesOrderOut)
@@ -278,7 +279,7 @@ def approve_order(
     so = _load_so(db, company_id, auth.organization_id, order_id)
     if so.status != SalesOrderStatus.DRAFT:
         raise HTTPException(status_code=400, detail="Only draft orders can be approved")
-    _credit_hold(db, company_id, so)
+    credit_note = _credit_hold(db, company_id, so)
     so.status = SalesOrderStatus.CONFIRMED
     so.confirmed_at = datetime.now(timezone.utc)
     so.ops_status = "awaiting_invoice"
@@ -290,6 +291,7 @@ def approve_order(
         organization_id=auth.organization_id,
         company_id=company_id,
         user_id=auth.user.id,
+        detail=credit_note,
     )
     db.commit()
     so = db.query(SalesOrder).options(joinedload(SalesOrder.lines)).filter(SalesOrder.id == so.id).first()
@@ -485,7 +487,7 @@ def allocate_dispatch(
     auth: AuthContext = Depends(require_perms("dispatch.create")),
     db: Session = Depends(get_db),
 ):
-    """Supervisor assigns a READY order to a logistics window. Stock leaves when the truck goes."""
+    """Supervisor or Sales assigns a READY order to a logistics window. Stock leaves when the truck goes."""
     from app.logistics.routes import assign_order_to_window
 
     company_id = auth.require_company()

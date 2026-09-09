@@ -86,6 +86,23 @@ type InvoiceRow = {
   }[];
 };
 
+type OrderLineDraft = {
+  product_id: number;
+  product_name: string;
+  quantity: string;
+  unit_price: string;
+  gst_rate: string;
+};
+
+type InvoiceDraft = {
+  invoice_date: string;
+  due_date: string;
+  credit_days: string;
+  number: string;
+  remarks: string;
+  lines: OrderLineDraft[];
+};
+
 function Invoices() {
   const { firm } = useCompany();
   const company = firms.find((f) => f.id === firm);
@@ -95,6 +112,7 @@ function Invoices() {
   const [rows, setRows] = useState<InvoiceRow[]>([]);
   const [selected, setSelected] = useState<Billable | null>(null);
   const [pickOrder, setPickOrder] = useState<BillableOrder | null>(null);
+  const [draft, setDraft] = useState<InvoiceDraft | null>(null);
   const [printInv, setPrintInv] = useState<InvoiceRow | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -137,6 +155,61 @@ function Invoices() {
     });
   }, [rows, q, status, overdueOnly, month]);
 
+  const draftEst = useMemo(() => {
+    if (!draft) return 0;
+    return draft.lines.reduce((sum, ln) => {
+      const qty = Number(ln.quantity) || 0;
+      const price = Number(ln.unit_price) || 0;
+      const gst = Number(ln.gst_rate) || 0;
+      const sub = qty * price;
+      return sum + sub + (sub * gst) / 100;
+    }, 0);
+  }, [draft]);
+
+  async function openInvoiceForm(o: BillableOrder) {
+    setError("");
+    setBusy(true);
+    try {
+      type So = {
+        id: number;
+        lines: { product_id: number; quantity: number; unit_price: number }[];
+      };
+      type Prod = { id: number; name: string; gst_rate?: string | number };
+      const [sos, products] = await Promise.all([
+        api<So[]>("/api/v1/sales-orders"),
+        api<Prod[]>("/api/v1/products").catch(() => [] as Prod[]),
+      ]);
+      const so = sos.find((x) => x.id === o.sales_order_id);
+      const names = Object.fromEntries(products.map((p) => [p.id, p]));
+      const today = new Date().toISOString().slice(0, 10);
+      const creditDays = 30;
+      const due = new Date();
+      due.setDate(due.getDate() + creditDays);
+      setPickOrder(o);
+      setDraft({
+        invoice_date: today,
+        due_date: due.toISOString().slice(0, 10),
+        credit_days: String(creditDays),
+        number: "",
+        remarks: "",
+        lines: (so?.lines || []).map((ln) => {
+          const p = names[ln.product_id];
+          return {
+            product_id: ln.product_id,
+            product_name: p?.name || `Product #${ln.product_id}`,
+            quantity: String(ln.quantity),
+            unit_price: String(ln.unit_price),
+            gst_rate: String(p?.gst_rate ?? 5),
+          };
+        }),
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not open invoice form");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function generate() {
     if (!selected) return;
     setBusy(true);
@@ -153,12 +226,36 @@ function Invoices() {
   }
 
   async function generateFromOrder(override = false) {
-    if (!pickOrder) return;
+    if (!pickOrder || !draft) return;
+    if (!draft.invoice_date || !draft.due_date) {
+      setError("Enter invoice date and due date");
+      return;
+    }
+    if (!draft.lines.length) {
+      setError("Add at least one invoice line");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      await api(`/api/v1/invoices/from-order/${pickOrder.sales_order_id}?override_credit=${override}`, { method: "POST" });
+      await api(`/api/v1/invoices/from-order/${pickOrder.sales_order_id}?override_credit=${override}`, {
+        method: "POST",
+        body: JSON.stringify({
+          invoice_date: draft.invoice_date,
+          due_date: draft.due_date,
+          credit_days: draft.credit_days ? Number(draft.credit_days) : null,
+          number: draft.number.trim() || null,
+          remarks: draft.remarks.trim() || null,
+          lines: draft.lines.map((ln) => ({
+            product_id: ln.product_id,
+            quantity: ln.quantity,
+            unit_price: ln.unit_price,
+            gst_rate: ln.gst_rate,
+          })),
+        }),
+      });
       setPickOrder(null);
+      setDraft(null);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not generate invoice");
@@ -190,7 +287,7 @@ function Invoices() {
     <>
       <PageHeader
         title="Invoices"
-        subtitle="Create from Super Admin–approved sales orders. After you raise the invoice, Supervisor allots the driver. After delivery, collect payment here."
+        subtitle="Ready to invoice shows Super Admin–approved orders. Enter bill details, then raise the invoice. After that Sales or Supervisor can allot a driver."
       />
       {error && !selected && !pickOrder && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
@@ -201,7 +298,7 @@ function Invoices() {
         <Kpi label="Awaiting payment" value={String(open)} tone="warn" />
       </div>
 
-      <Panel title="Ready to invoice" hint="Super Admin approved these orders — raise the invoice so Supervisor can allot a driver" className="mt-6">
+      <Panel title="Ready to invoice" hint="Enter invoice date, due date, rates and remarks, then raise the bill" className="mt-6">
         <Table head={["Order", "Customer", "Lines", "Est. total", "Stage", "Credit", ""]}>
           {orders.map((o) => (
             <tr key={o.sales_order_id}>
@@ -214,8 +311,8 @@ function Invoices() {
                 <Badge tone={o.credit_ok ? "good" : "bad"}>{o.credit_ok ? "Within limit" : "Limit exceeded"}</Badge>
               </Td>
               <Td>
-                <button type="button" className="text-sm text-primary hover:underline" onClick={() => setPickOrder(o)}>
-                  Invoice
+                <button type="button" className="text-sm text-primary hover:underline" onClick={() => void openInvoiceForm(o)}>
+                  Enter details
                 </button>
               </Td>
             </tr>
@@ -403,24 +500,128 @@ function Invoices() {
         </div>
       )}
 
-      {pickOrder && (
+      {pickOrder && draft && (
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={() => setPickOrder(null)} />
-          <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl">
-            <h2 className="text-lg font-semibold">Generate invoice</h2>
+          <button
+            type="button"
+            className="absolute inset-0 bg-foreground/40"
+            aria-label="Close"
+            onClick={() => {
+              setPickOrder(null);
+              setDraft(null);
+            }}
+          />
+          <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-lg sm:rounded-2xl">
+            <h2 className="text-lg font-semibold">Enter invoice details</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              SO-{pickOrder.sales_order_id} · approved sales prices · GST from product master
+              SO-{pickOrder.sales_order_id} · {pickOrder.customer_name} — fill dates, lines and remarks, then raise.
             </p>
-            <dl className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Customer</dt><dd className="font-medium">{pickOrder.customer_name}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Lines</dt><dd>{pickOrder.line_count}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Est. total incl. GST</dt><dd className="tabular-nums font-medium">{money(pickOrder.estimated_total)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Credit limit</dt><dd className="tabular-nums">{money(pickOrder.credit_limit)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Current outstanding</dt><dd className="tabular-nums">{money(pickOrder.current_outstanding)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Projected exposure</dt><dd className="tabular-nums">{money(pickOrder.projected_exposure)}</dd></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-muted-foreground">
+                Invoice date
+                <input
+                  type="date"
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                  value={draft.invoice_date}
+                  onChange={(e) => setDraft({ ...draft, invoice_date: e.target.value })}
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                Due date
+                <input
+                  type="date"
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                  value={draft.due_date}
+                  onChange={(e) => setDraft({ ...draft, due_date: e.target.value })}
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                Credit days
+                <input
+                  type="number"
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                  value={draft.credit_days}
+                  onChange={(e) => setDraft({ ...draft, credit_days: e.target.value })}
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                Invoice number (optional)
+                <input
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                  placeholder="Auto if blank"
+                  value={draft.number}
+                  onChange={(e) => setDraft({ ...draft, number: e.target.value })}
+                />
+              </label>
+            </div>
+            <label className="mt-3 block text-xs text-muted-foreground">
+              Remarks / notes
+              <textarea
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                rows={2}
+                value={draft.remarks}
+                onChange={(e) => setDraft({ ...draft, remarks: e.target.value })}
+                placeholder="Any Accounts notes for this bill"
+              />
+            </label>
+            <div className="mt-4 space-y-3">
+              <p className="text-sm font-medium">Lines</p>
+              {draft.lines.map((ln, idx) => (
+                <div key={ln.product_id} className="rounded-xl border border-border p-3">
+                  <p className="text-sm font-medium">{ln.product_name}</p>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <label className="text-xs text-muted-foreground">
+                      Qty
+                      <input
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
+                        value={ln.quantity}
+                        onChange={(e) => {
+                          const lines = [...draft.lines];
+                          lines[idx] = { ...ln, quantity: e.target.value };
+                          setDraft({ ...draft, lines });
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      Rate
+                      <input
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
+                        value={ln.unit_price}
+                        onChange={(e) => {
+                          const lines = [...draft.lines];
+                          lines[idx] = { ...ln, unit_price: e.target.value };
+                          setDraft({ ...draft, lines });
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      GST %
+                      <input
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
+                        value={ln.gst_rate}
+                        onChange={(e) => {
+                          const lines = [...draft.lines];
+                          lines[idx] = { ...ln, gst_rate: e.target.value };
+                          setDraft({ ...draft, lines });
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <dl className="mt-4 space-y-1 text-sm">
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">Est. total incl. GST</dt>
+                <dd className="tabular-nums font-medium">{money(draftEst)}</dd>
+              </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted-foreground">Credit</dt>
-                <dd><Badge tone={pickOrder.credit_ok ? "good" : "bad"}>{pickOrder.credit_ok ? "Within limit" : "Limit exceeded"}</Badge></dd>
+                <dd>
+                  <Badge tone={pickOrder.credit_ok ? "good" : "bad"}>
+                    {pickOrder.credit_ok ? "Within limit" : "Limit exceeded"}
+                  </Badge>
+                </dd>
               </div>
             </dl>
             {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
@@ -431,9 +632,16 @@ function Invoices() {
                 onClick={() => void generateFromOrder(!pickOrder.credit_ok)}
                 className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
               >
-                {busy ? "Creating…" : pickOrder.credit_ok ? "Generate invoice" : "Invoice anyway"}
+                {busy ? "Creating…" : pickOrder.credit_ok ? "Raise invoice" : "Raise anyway"}
               </button>
-              <button type="button" onClick={() => setPickOrder(null)} className="rounded-lg border border-border py-2.5 text-sm">
+              <button
+                type="button"
+                onClick={() => {
+                  setPickOrder(null);
+                  setDraft(null);
+                }}
+                className="rounded-lg border border-border py-2.5 text-sm"
+              >
                 Cancel
               </button>
             </div>
