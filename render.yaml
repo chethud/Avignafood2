@@ -1,6 +1,5 @@
-# Render Blueprint — API + Postgres for Avighna Foods demo
-# Dashboard: New → Blueprint → connect this repo
-# Docs: https://render.com/docs/blueprint-spec
+# Render Blueprint — use branch `main` on chethud/Avignafood2
+# Dashboard: New → Blueprint → connect repo → apply
 
 databases:
   - name: avighna-db
@@ -11,11 +10,11 @@ databases:
 services:
   - type: web
     name: avighna-api
-    runtime: python
+    runtime: docker
     plan: free
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -25,7 +24,5 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: CORS_ORIGINS
-        # Set after Vercel deploy, e.g. https://avignafood.vercel.app
+        # After Vercel: set to https://YOUR-APP.vercel.app (comma-separated OK)
         sync: false
-      - key: PYTHON_VERSION
-        value: "3.12.8"
