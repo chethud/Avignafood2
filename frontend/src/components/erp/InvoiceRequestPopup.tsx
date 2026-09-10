@@ -147,7 +147,7 @@ export function InvoiceRequestPopup({
         <p className="mt-1 text-sm text-muted-foreground">
           Company <span className="font-medium text-foreground">{current.companyName}</span>
           {" · "}
-          Owner approved SO-{current.salesOrderId}. Raise the GST invoice so Sales / Supervisor can allot a truck.
+          Owner approved SO-{current.salesOrderId}. Raise the GST invoice first — then Supervisor or Sales can allot a driver.
         </p>
 
         <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">

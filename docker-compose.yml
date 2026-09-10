@@ -21,6 +21,7 @@ services:
       DATABASE_URL: postgresql+psycopg2://avighnya:avighnya@db:5432/avighnya
       SECRET_KEY: change-me-in-production-avighnya-foods-secret
       CORS_ORIGINS: http://localhost:3000
+      SEED_DEMO_TRANSACTIONS: "1"
     ports:
       - "8000:8000"
     depends_on:

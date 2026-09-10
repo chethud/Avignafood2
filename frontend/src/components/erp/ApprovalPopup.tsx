@@ -315,7 +315,7 @@ function OrderApprovalBody({ item }: { item: PendingItem }) {
 
       {item.notes ? <p className="text-xs text-muted-foreground">Notes: {item.notes}</p> : null}
       <p className="text-xs text-muted-foreground">
-        Approve so Accounts can raise the invoice. Sales or Supervisor allots the driver after that.
+        Approve so Accounts can raise the invoice first. After invoicing, Supervisor or Sales allot the driver.
       </p>
     </div>
   );

@@ -223,6 +223,7 @@ def _notice(
     load: Dispatch,
     customers: dict[int, Customer],
     invoiced_ids: set[int],
+    company_name: str | None = None,
 ) -> BillableLoadOut:
     cust = customers.get(load.customer_id)
     product, unit_price = _price_for_dispatch(db, company_id, load)
@@ -232,6 +233,8 @@ def _notice(
     invoiced = load.id in invoiced_ids
     return BillableLoadOut(
         dispatch_id=load.id,
+        company_id=company_id,
+        company_name=company_name,
         customer_id=load.customer_id,
         customer_name=cust.name if cust else f"Customer #{load.customer_id}",
         product=load.product,
@@ -258,7 +261,14 @@ def _list_notices(db: Session, company_id: int | None, org_id: int) -> list[Bill
     if company_id is not None:
         cust_q = cust_q.filter(Customer.company_id == company_id)
     customers = {c.id: c for c in cust_q.all()}
-    return [_notice(db, load.company_id, load, customers, invoiced_ids) for load in loads]
+    companies = {
+        c.id: (c.trade_name or c.legal_name)
+        for c in db.query(Company).filter(Company.organization_id == org_id).all()
+    }
+    return [
+        _notice(db, load.company_id, load, customers, invoiced_ids, companies.get(load.company_id))
+        for load in loads
+    ]
 
 
 @router.get("/dispatch-inbox", response_model=list[BillableLoadOut])
@@ -357,15 +367,17 @@ def send_invoice(
     auth: AuthContext = Depends(require_perms("invoices.create")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     if via not in ("whatsapp", "email"):
         raise HTTPException(status_code=400, detail="Use whatsapp or email")
-    inv = (
+    q = (
         db.query(Invoice)
         .options(joinedload(Invoice.lines))
-        .filter(Invoice.id == invoice_id, Invoice.company_id == company_id)
-        .first()
+        .filter(Invoice.id == invoice_id, Invoice.organization_id == auth.organization_id)
     )
+    if company_id is not None:
+        q = q.filter(Invoice.company_id == company_id)
+    inv = q.first()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
     inv.sent_at = datetime.now(timezone.utc)
@@ -381,18 +393,17 @@ def invoice_from_dispatch(
     auth: AuthContext = Depends(require_perms("invoices.create")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    load = (
-        db.query(Dispatch)
-        .filter(
-            Dispatch.id == dispatch_id,
-            Dispatch.company_id == company_id,
-            Dispatch.organization_id == auth.organization_id,
-        )
-        .first()
+    scope = auth.company_or_all()
+    load_q = db.query(Dispatch).filter(
+        Dispatch.id == dispatch_id,
+        Dispatch.organization_id == auth.organization_id,
     )
+    if scope is not None:
+        load_q = load_q.filter(Dispatch.company_id == scope)
+    load = load_q.first()
     if not load:
         raise HTTPException(status_code=404, detail="Dispatch not found")
+    company_id = load.company_id
     if load.status not in NEAR_DISPATCH:
         raise HTTPException(
             status_code=400,
@@ -487,11 +498,19 @@ def invoice_from_dispatch(
     return _out(inv, customer, _product_names(db, [inv]) if inv else None)
 
 
+def _client_key(c: Customer) -> str:
+    gst = (c.gstin or "").strip().upper()
+    if gst:
+        return f"gst:{gst}"
+    return f"name:{(c.name or '').strip().lower()}"
+
+
 @router.get("/clients", response_model=list[ClientAccountOut])
 def list_client_accounts(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
+    """One row per customer (same name/GST across firms is merged when scope is All)."""
     company_id = auth.company_or_all()
     cust_q = db.query(Customer).filter(Customer.organization_id == auth.organization_id)
     inv_q = db.query(Invoice).filter(
@@ -510,14 +529,28 @@ def list_client_accounts(
     invoices = inv_q.all()
     fulfilled = disp_q.group_by(Dispatch.customer_id).all()
     fulfilled_map = {r[0]: int(r[1]) for r in fulfilled}
+    companies = {
+        c.id: (c.trade_name or c.legal_name)
+        for c in db.query(Company).filter(Company.organization_id == auth.organization_id).all()
+    }
 
     inv_by_cust: dict[int, list[Invoice]] = {}
     for inv in invoices:
         inv_by_cust.setdefault(inv.customer_id, []).append(inv)
 
-    out: list[ClientAccountOut] = []
+    groups: dict[str, list[Customer]] = {}
     for c in customers:
-        rows = inv_by_cust.get(c.id, [])
+        groups.setdefault(_client_key(c), []).append(c)
+
+    out: list[ClientAccountOut] = []
+    for members in groups.values():
+        members = sorted(members, key=lambda x: x.id)
+        primary = members[0]
+        ids = [m.id for m in members]
+        company_ids = sorted({m.company_id for m in members})
+        rows: list[Invoice] = []
+        for mid in ids:
+            rows.extend(inv_by_cust.get(mid, []))
         revenue = sum((i.total for i in rows), Decimal("0"))
         outstanding = sum(
             (inv_outstanding(i) for i in rows if i.status in (InvoiceStatus.OPEN, InvoiceStatus.PARTIAL)),
@@ -534,15 +567,21 @@ def list_client_accounts(
             ),
             Decimal("0"),
         )
+        fulfilled_n = sum(fulfilled_map.get(mid, 0) for mid in ids)
+        firm_names = [companies.get(cid) or f"Company {cid}" for cid in company_ids]
         out.append(
             ClientAccountOut(
-                customer_id=c.id,
-                name=c.name,
-                gstin=c.gstin,
-                phone=c.phone,
-                credit_days=c.credit_days or 0,
-                credit_limit=c.credit_limit or Decimal("0"),
-                orders_fulfilled=fulfilled_map.get(c.id, 0),
+                customer_id=primary.id,
+                customer_ids=ids,
+                company_id=primary.company_id,
+                company_ids=company_ids,
+                company_name=", ".join(firm_names),
+                name=primary.name,
+                gstin=next((m.gstin for m in members if m.gstin), None),
+                phone=next((m.phone for m in members if m.phone), None),
+                credit_days=max((m.credit_days or 0) for m in members),
+                credit_limit=max((m.credit_limit or Decimal("0")) for m in members),
+                orders_fulfilled=fulfilled_n,
                 invoice_count=len(rows),
                 total_revenue=revenue,
                 outstanding=outstanding,
@@ -550,6 +589,7 @@ def list_client_accounts(
                 overdue=overdue,
             )
         )
+    out.sort(key=lambda r: r.name.lower())
     return out
 
 
@@ -559,24 +599,39 @@ def client_ledger(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    customer = (
-        db.query(Customer)
-        .filter(
-            Customer.id == customer_id,
-            Customer.company_id == company_id,
-            Customer.organization_id == auth.organization_id,
-        )
-        .first()
+    """Full customer ledger. Under All companies, merges same-name / same-GST firm records."""
+    scope = auth.company_or_all()
+    cust_q = db.query(Customer).filter(
+        Customer.id == customer_id,
+        Customer.organization_id == auth.organization_id,
     )
+    if scope is not None:
+        cust_q = cust_q.filter(Customer.company_id == scope)
+    customer = cust_q.first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+
+    siblings_q = db.query(Customer).filter(Customer.organization_id == auth.organization_id)
+    if scope is not None:
+        siblings_q = siblings_q.filter(Customer.company_id == scope)
+        members = [customer]
+    else:
+        key = _client_key(customer)
+        members = [c for c in siblings_q.all() if _client_key(c) == key] or [customer]
+    members = sorted(members, key=lambda x: x.id)
+    ids = [m.id for m in members]
+    company_ids = sorted({m.company_id for m in members})
+    companies = {
+        c.id: (c.trade_name or c.legal_name)
+        for c in db.query(Company).filter(Company.id.in_(company_ids or [0])).all()
+    }
+
     invs = (
         db.query(Invoice)
         .options(joinedload(Invoice.lines))
         .filter(
-            Invoice.customer_id == customer_id,
-            Invoice.company_id == company_id,
+            Invoice.customer_id.in_(ids),
+            Invoice.organization_id == auth.organization_id,
             Invoice.status != InvoiceStatus.CANCELLED,
         )
         .order_by(Invoice.id.desc())
@@ -585,11 +640,21 @@ def client_ledger(
     fulfilled = (
         db.query(func.count(Dispatch.id))
         .filter(
-            Dispatch.company_id == company_id,
-            Dispatch.customer_id == customer_id,
+            Dispatch.customer_id.in_(ids),
             Dispatch.status.in_(("Dispatched", "Delivered")),
         )
         .scalar()
+    )
+    orders = (
+        db.query(SalesOrder)
+        .options(joinedload(SalesOrder.lines))
+        .filter(
+            SalesOrder.customer_id.in_(ids),
+            SalesOrder.organization_id == auth.organization_id,
+            SalesOrder.status != SalesOrderStatus.CANCELLED,
+        )
+        .order_by(SalesOrder.id.desc())
+        .all()
     )
     revenue = sum((i.total for i in invs), Decimal("0"))
     outstanding = sum(
@@ -606,21 +671,47 @@ def client_ledger(
         Decimal("0"),
     )
     names = _product_names(db, invs)
+    cust_by_id = {m.id: m for m in members}
+    order_rows = []
+    for so in orders:
+        c = cust_by_id.get(so.customer_id)
+        order_rows.append(
+            {
+                "id": so.id,
+                "company_id": so.company_id,
+                "company_name": companies.get(so.company_id),
+                "status": so.status.value if hasattr(so.status, "value") else str(so.status),
+                "ops_status": so.ops_status or "",
+                "created_at": so.created_at.isoformat() if so.created_at else None,
+                "confirmed_at": so.confirmed_at.isoformat() if so.confirmed_at else None,
+                "line_count": len(so.lines or []),
+                "qty": float(sum((ln.quantity for ln in (so.lines or [])), Decimal("0"))),
+                "value": float(
+                    sum((ln.quantity * ln.unit_price for ln in (so.lines or [])), Decimal("0"))
+                ),
+                "notes": so.notes,
+            }
+        )
     return ClientLedgerOut(
         customer_id=customer.id,
+        customer_ids=ids,
+        company_id=customer.company_id,
+        company_ids=company_ids,
+        company_name=", ".join(companies.get(cid) or f"Company {cid}" for cid in company_ids),
         name=customer.name,
-        gstin=customer.gstin,
-        phone=customer.phone,
-        address=customer.address,
-        credit_days=customer.credit_days or 0,
-        credit_limit=customer.credit_limit or Decimal("0"),
+        gstin=next((m.gstin for m in members if m.gstin), None),
+        phone=next((m.phone for m in members if m.phone), None),
+        address=next((m.address for m in members if m.address), None),
+        credit_days=max((m.credit_days or 0) for m in members),
+        credit_limit=max((m.credit_limit or Decimal("0")) for m in members),
         orders_fulfilled=int(fulfilled or 0),
         invoice_count=len(invs),
         total_revenue=revenue,
         outstanding=outstanding,
         paid=paid,
         overdue=overdue,
-        invoices=[_out(i, customer, names) for i in invs],
+        invoices=[_out(i, cust_by_id.get(i.customer_id) or customer, names) for i in invs],
+        orders=order_rows,
     )
 
 
@@ -741,8 +832,8 @@ def invoice_from_order(
     inv.tax_amount = tax_amount
     inv.total = subtotal + tax_amount
     so.status = SalesOrderStatus.INVOICED
-    # Stock check for Sales allot — do not queue Supervisor for "pending_verify"
-    if (so.ops_status or "") not in ("allocated", "dispatched", "ready", "shortage", "procuring"):
+    # After Accounts raises invoice → Order desk for Supervisor or Sales to allot driver
+    if (so.ops_status or "") not in ("allocated", "dispatched"):
         from app.sales.ops import line_stock
 
         stock_lines = line_stock(db, so.warehouse_id, so.lines)
@@ -751,7 +842,8 @@ def invoice_from_order(
             for ln in so.lines:
                 ln.outstanding_qty = Decimal("0")
         else:
-            so.ops_status = "shortage"
+            # Still show on Order desk; Sales/Supervisor can confirm stock then allot
+            so.ops_status = "pending_verify"
     remarks = (body.remarks or "").strip() if body else ""
     if remarks:
         so.notes = f"{(so.notes or '').strip()}\n[Invoice] {remarks}".strip()
@@ -776,17 +868,18 @@ def get_invoice(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    inv = (
+    company_id = auth.company_or_all()
+    q = (
         db.query(Invoice)
         .options(joinedload(Invoice.lines))
         .filter(
             Invoice.id == invoice_id,
-            Invoice.company_id == company_id,
             Invoice.organization_id == auth.organization_id,
         )
-        .first()
     )
+    if company_id is not None:
+        q = q.filter(Invoice.company_id == company_id)
+    inv = q.first()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
     customer = db.query(Customer).filter(Customer.id == inv.customer_id).first()

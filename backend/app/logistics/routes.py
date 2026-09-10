@@ -42,7 +42,7 @@ SLOTS = ("morning", "afternoon", "evening")
 SLOT_LABEL = {"morning": "Morning", "afternoon": "Afternoon", "evening": "Evening"}
 
 RUN_NEXT = {
-    "planned": ("loaded", "dispatched", "going"),
+    "planned": ("loading", "loaded", "dispatched", "going"),
     "loading": ("loaded", "dispatched", "going"),
     "loaded": ("dispatched", "going"),
     "dispatched": ("in_transit", "out_for_delivery", "returning"),
@@ -238,6 +238,7 @@ def _run_out(db: Session, run: LogisticsRun) -> LogisticsRunOut:
         live = "idle"
     return LogisticsRunOut(
         id=run.id,
+        company_id=run.company_id,
         number=run.number,
         on_date=run.on_date,
         slot=getattr(run, "slot", None) or "afternoon",
@@ -307,13 +308,17 @@ def assign_order_to_window(
     slot: str,
     veh: Vehicle | None,
     user_id: int | None,
+    driver_name: str | None = None,
 ) -> LogisticsRun:
-    """Supervisor assigns a READY order to a morning/afternoon/evening run."""
+    """Sales / Supervisor assigns a READY order to a window: vehicle first, then logistics driver."""
     slot = (slot or "afternoon").lower()
     if slot not in SLOTS:
         raise HTTPException(status_code=400, detail="Window must be morning, afternoon or evening")
     if (so.ops_status or "") != "ready":
         raise HTTPException(status_code=400, detail="Only READY orders can be assigned to logistics")
+    driver = (driver_name or "").strip() or (veh.driver_name if veh else None) or None
+    if not driver:
+        raise HTTPException(status_code=400, detail="Select a logistics driver after the vehicle")
     taken = (
         db.query(LogisticsStop)
         .join(LogisticsRun, LogisticsRun.id == LogisticsStop.run_id)
@@ -339,6 +344,9 @@ def assign_order_to_window(
         if veh and match.vehicle_id and match.vehicle_id != veh.id:
             raise HTTPException(status_code=400, detail="That window is already on another vehicle")
         target = match
+        target.driver_name = driver
+        if veh and not target.vehicle_id:
+            target.vehicle_id = veh.id
     else:
         if _window_taken(db, org_id, on_date, slot):
             raise HTTPException(status_code=400, detail=f"{SLOT_LABEL[slot]} is already booked")
@@ -351,7 +359,7 @@ def assign_order_to_window(
             on_date=on_date,
             slot=slot,
             vehicle_id=veh.id if veh else None,
-            driver_name=(veh.driver_name if veh else None) or "Ravi Kumar",
+            driver_name=driver,
             agency="Own Vehicle",
             status="planned",
             created_by_id=user_id,
@@ -501,8 +509,16 @@ def plan_run(
     db: Session = Depends(get_db),
 ):
     company_id = auth.require_company()
-    if auth.role == RoleName.LOGISTICS:
-        raise HTTPException(status_code=400, detail="Supervisor assigns orders on Order desk")
+    if auth.role not in (
+        RoleName.SALES,
+        RoleName.SUPERVISOR,
+        RoleName.OWNER,
+        RoleName.SUPER_ADMIN,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Only Sales or Supervisor can allot a driver after Accounts raises the invoice",
+        )
     if not body.order_ids:
         raise HTTPException(status_code=400, detail="Pick at least one ready order")
     slot = (body.slot or "afternoon").lower()
@@ -540,6 +556,7 @@ def plan_run(
             slot=slot,
             veh=veh,
             user_id=auth.user.id,
+            driver_name=(body.driver_name or "").strip() or None,
         )
     write_audit(
         db,
@@ -617,13 +634,22 @@ def set_run_status(
     auth: AuthContext = Depends(require_perms("dispatch.edit")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    run = (
-        db.query(LogisticsRun)
-        .options(joinedload(LogisticsRun.stops))
-        .filter(LogisticsRun.id == run_id, LogisticsRun.company_id == company_id)
-        .first()
-    )
+    # Logistics may drive a run for any allotted company in the org
+    if auth.role == RoleName.LOGISTICS:
+        run = (
+            db.query(LogisticsRun)
+            .options(joinedload(LogisticsRun.stops))
+            .filter(LogisticsRun.id == run_id, LogisticsRun.organization_id == auth.organization_id)
+            .first()
+        )
+    else:
+        company_id = auth.require_company()
+        run = (
+            db.query(LogisticsRun)
+            .options(joinedload(LogisticsRun.stops))
+            .filter(LogisticsRun.id == run_id, LogisticsRun.company_id == company_id)
+            .first()
+        )
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     wanted = "dispatched" if body.status == "going" else body.status
@@ -634,6 +660,8 @@ def set_run_status(
         _dispatch_run(db, run)
     elif wanted == "loaded":
         run.status = "loaded"
+    elif wanted == "loading":
+        run.status = "loading"
     elif wanted == "returning":
         run.status = "returning"
         _set_vehicle_live(db, run.vehicle_id, "returning")

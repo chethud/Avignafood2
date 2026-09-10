@@ -1,12 +1,19 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.deps import AuthContext, require_perms
-from app.core.models import Vehicle, VehicleSlot
-from app.core.schemas import VehicleAvailOut, VehicleCreate, VehicleLiveSet, VehicleOut, VehicleSlotSet
+from app.core.models import Customer, LogisticsRun, Role, RoleName, User, Vehicle, VehicleSlot
+from app.core.schemas import (
+    DriverOut,
+    VehicleAvailOut,
+    VehicleCreate,
+    VehicleLiveSet,
+    VehicleOut,
+    VehicleSlotSet,
+)
 
 router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 
@@ -29,7 +36,34 @@ def _slot_status(db: Session, vehicle_id: int, on_date: date, slot: str) -> str:
     return row.status if row else "free"
 
 
+def _slot_assignment(db: Session, vehicle_id: int, on_date: date, slot: str) -> str | None:
+    """Who/where this truck is booked for in a window (sales can promise around it)."""
+    run = (
+        db.query(LogisticsRun)
+        .options(joinedload(LogisticsRun.stops))
+        .filter(
+            LogisticsRun.vehicle_id == vehicle_id,
+            LogisticsRun.on_date == on_date,
+            LogisticsRun.slot == slot,
+        )
+        .order_by(LogisticsRun.id.desc())
+        .first()
+    )
+    if not run:
+        return None
+    names: list[str] = []
+    for stop in run.stops or []:
+        cust = db.query(Customer).filter(Customer.id == stop.customer_id).first()
+        if cust and cust.name and cust.name not in names:
+            names.append(cust.name)
+    parts = [p for p in [", ".join(names[:2]) if names else None, run.route, run.number] if p]
+    return " · ".join(parts) if parts else "Assigned"
+
+
 def _avail(db: Session, v: Vehicle, on_date: date) -> VehicleAvailOut:
+    morning = _slot_status(db, v.id, on_date, "morning")
+    afternoon = _slot_status(db, v.id, on_date, "afternoon")
+    evening = _slot_status(db, v.id, on_date, "evening")
     return VehicleAvailOut(
         vehicle_id=v.id,
         name=v.name,
@@ -37,9 +71,12 @@ def _avail(db: Session, v: Vehicle, on_date: date) -> VehicleAvailOut:
         kind=v.kind,
         driver_name=v.driver_name,
         live_status="going" if (v.live_status or "idle") == "traveling" else (v.live_status or "idle"),
-        morning=_slot_status(db, v.id, on_date, "morning"),
-        afternoon=_slot_status(db, v.id, on_date, "afternoon"),
-        evening=_slot_status(db, v.id, on_date, "evening"),
+        morning=morning,
+        afternoon=afternoon,
+        evening=evening,
+        morning_for=_slot_assignment(db, v.id, on_date, "morning") if morning == "booked" else None,
+        afternoon_for=_slot_assignment(db, v.id, on_date, "afternoon") if afternoon == "booked" else None,
+        evening_for=_slot_assignment(db, v.id, on_date, "evening") if evening == "booked" else None,
     )
 
 
@@ -84,6 +121,29 @@ def create_vehicle(
     db.commit()
     db.refresh(v)
     return v
+
+
+@router.get("/drivers", response_model=list[DriverOut])
+def list_drivers(
+    auth: AuthContext = Depends(require_perms("vehicles.view")),
+    db: Session = Depends(get_db),
+):
+    """Logistics people Owner created — Sales/Supervisor pick them after choosing a vehicle."""
+    rows = (
+        db.query(User)
+        .join(Role, Role.id == User.role_id)
+        .filter(
+            User.organization_id == auth.organization_id,
+            User.is_active.is_(True),
+            Role.name == RoleName.LOGISTICS,
+        )
+        .order_by(User.full_name)
+        .all()
+    )
+    return [
+        DriverOut(id=u.id, full_name=u.full_name, phone=u.phone, email=u.email)
+        for u in rows
+    ]
 
 
 @router.get("/availability", response_model=VehicleAvailOut)

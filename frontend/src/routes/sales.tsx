@@ -22,15 +22,34 @@ export const Route = createFileRoute("/sales")({
 
 type ApprovalRow = (typeof approvals)[number];
 
+type OrderLine = {
+  id?: number;
+  product_id: number;
+  product_name?: string;
+  unit?: string;
+  quantity: number;
+  unit_price: number;
+  outstanding_qty?: number;
+  on_hand?: number;
+  stock_ok?: boolean;
+  wholesale_price?: number;
+  selling_price?: number;
+  below_wholesale?: boolean;
+};
+
 type Order = {
   id: number;
+  company_id?: number;
+  company_name?: string | null;
   customer_id: number;
   customer_name: string | null;
   status: string;
   ops_status: string;
   quotation_id: number | null;
-  lines: { product_id: number; quantity: number; unit_price: number; outstanding_qty?: number }[];
+  notes?: string | null;
+  lines: OrderLine[];
   stock_warnings: string[];
+  created_by_name?: string | null;
   created_at?: string | null;
   confirmed_at?: string | null;
   logistics_status?: string | null;
@@ -52,6 +71,25 @@ function orderStage(o: Order) {
   return o.status;
 }
 
+function fmtWhen(value?: string | null) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function lineLabel(ln: OrderLine, products: ProductOpt[]) {
+  return ln.product_name || products.find((p) => p.id === ln.product_id)?.name || `Product #${ln.product_id}`;
+}
+
+function lineUnit(ln: OrderLine, products: ProductOpt[]) {
+  return ln.unit || products.find((p) => p.id === ln.product_id)?.unit || "KG";
+}
+
+function orderTotal(o: Order) {
+  return o.lines.reduce((sum, ln) => sum + Number(ln.quantity || 0) * Number(ln.unit_price || 0), 0);
+}
+
 function isOverdue(o: Order) {
   if (o.lines.some((ln) => Number(ln.outstanding_qty) > 0)) return true;
   if (o.ops_status === "shortage" || o.ops_status === "procuring") return true;
@@ -69,6 +107,7 @@ function SalesWorkspace() {
   const [products, setProducts] = useState<ProductOpt[]>([]);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"normal" | "overdue">("normal");
+  const [open, setOpen] = useState<Order | null>(null);
 
   async function load() {
     const [o, p] = await Promise.all([
@@ -77,6 +116,7 @@ function SalesWorkspace() {
     ]);
     setOrders(o);
     setProducts(p);
+    setOpen((prev) => (prev ? o.find((row) => row.id === prev.id) || null : null));
   }
 
   useEffect(() => {
@@ -100,7 +140,7 @@ function SalesWorkspace() {
 
   return (
     <>
-      <PageHeader title="Orders" subtitle="Create → Super Admin approves → Accounts invoices → you or Supervisor allot date/window/vehicle on Order desk." />
+      <PageHeader title="Orders" subtitle="Tap an order for full details. Create → Super Admin approves → Accounts invoices → allot on Order desk." />
       <div className="mb-4 grid grid-cols-2 gap-2">
         <button
           type="button"
@@ -128,7 +168,19 @@ function SalesWorkspace() {
       {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
       <ul className="space-y-2">
         {shown.map((o) => (
-          <li key={o.id} className="rounded-2xl border border-border bg-card px-3 py-3">
+          <li
+            key={o.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => setOpen(o)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setOpen(o);
+              }
+            }}
+            className="cursor-pointer rounded-2xl border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-secondary/40"
+          >
             <div className="flex items-start justify-between gap-2">
               <span>
                 <span className="block font-medium">SO-{o.id}</span>
@@ -151,17 +203,17 @@ function SalesWorkspace() {
                 Outstanding delivery:{" "}
                 {o.lines
                   .filter((ln) => Number(ln.outstanding_qty) > 0)
-                  .map((ln) => {
-                    const p = products.find((x) => x.id === ln.product_id);
-                    return `${Number(ln.outstanding_qty).toLocaleString("en-IN")} ${p?.unit || "KG"} ${p?.name || ""}`.trim();
-                  })
+                  .map((ln) => `${Number(ln.outstanding_qty).toLocaleString("en-IN")} ${lineUnit(ln, products)} ${lineLabel(ln, products)}`.trim())
                   .join(" · ")}
               </p>
             )}
             {o.status === "draft" && o.ops_status !== "pending_approval" && (
               <button
                 type="button"
-                onClick={() => void confirmOrder(o.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void confirmOrder(o.id);
+                }}
                 className="mt-2 rounded-xl border border-border px-3 py-1.5 text-xs"
               >
                 Send to Super Admin
@@ -175,6 +227,139 @@ function SalesWorkspace() {
           </li>
         )}
       </ul>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-foreground/40 p-4 sm:items-center">
+          <button type="button" className="absolute inset-0 cursor-default" aria-label="Close" onClick={() => setOpen(null)} />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sales-order-detail-title"
+            className="relative z-10 max-h-[90dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-border bg-card p-5"
+          >
+            <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">
+              SO-{open.id}
+              {open.company_name ? ` · ${open.company_name}` : ""}
+              {open.quotation_id ? ` · Quote #${open.quotation_id}` : ""}
+            </p>
+            <h2 id="sales-order-detail-title" className="mt-1 text-xl font-semibold tracking-tight">
+              {open.customer_name || `Customer ${open.customer_id}`}
+            </h2>
+            <div className="mt-2">
+              <Badge tone={isOverdue(open) ? "warn" : open.status === "cancelled" ? "bad" : "neutral"}>
+                {isOverdue(open) ? "Overdue" : orderStage(open)}
+              </Badge>
+            </div>
+
+            <dl className="mt-4 space-y-2 text-sm">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Order status</dt>
+                  <dd className="mt-0.5 font-medium capitalize">{open.status.replaceAll("_", " ")}</dd>
+                </div>
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Warehouse</dt>
+                  <dd className="mt-0.5 font-medium capitalize">{open.ops_status.replaceAll("_", " ")}</dd>
+                </div>
+              </div>
+              {(open.logistics_status || open.vehicle || open.eta) && (
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Dispatch</dt>
+                  <dd className="mt-0.5 font-medium capitalize">
+                    {[open.logistics_status?.replaceAll("_", " "), open.vehicle, open.eta ? `expected ${open.eta}` : null]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </dd>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Created</dt>
+                  <dd className="mt-0.5 font-medium">{fmtWhen(open.created_at) || "—"}</dd>
+                </div>
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Confirmed</dt>
+                  <dd className="mt-0.5 font-medium">{fmtWhen(open.confirmed_at) || "—"}</dd>
+                </div>
+              </div>
+              {open.created_by_name && (
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Created by</dt>
+                  <dd className="mt-0.5 font-medium">{open.created_by_name}</dd>
+                </div>
+              )}
+              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                <dt className="text-xs text-muted-foreground">Order value</dt>
+                <dd className="mt-0.5 font-medium tabular-nums">{inr(orderTotal(open))}</dd>
+              </div>
+            </dl>
+
+            <div className="mt-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Lines</p>
+              <ul className="mt-2 space-y-2">
+                {open.lines.map((ln, idx) => (
+                  <li key={ln.id ?? `${ln.product_id}-${idx}`} className="rounded-xl border border-border px-3 py-2.5 text-sm">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-medium">{lineLabel(ln, products)}</span>
+                      <span className="tabular-nums text-muted-foreground">
+                        {inr(Number(ln.quantity) * Number(ln.unit_price))}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {Number(ln.quantity).toLocaleString("en-IN")} {lineUnit(ln, products)} × {inr(ln.unit_price)}
+                      {ln.on_hand != null ? ` · stock ${Number(ln.on_hand).toLocaleString("en-IN")}` : ""}
+                    </p>
+                    {Number(ln.outstanding_qty) > 0 && (
+                      <p className="mt-1 text-xs font-medium text-warning">
+                        Outstanding {Number(ln.outstanding_qty).toLocaleString("en-IN")} {lineUnit(ln, products)}
+                      </p>
+                    )}
+                    {ln.below_wholesale && (
+                      <p className="mt-1 text-xs text-destructive">Below wholesale {inr(ln.wholesale_price || 0)}</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {open.stock_warnings?.length > 0 && (
+              <div className="mt-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm text-warning">
+                {open.stock_warnings.join(" · ")}
+              </div>
+            )}
+            {open.notes && (
+              <p className="mt-3 text-sm text-muted-foreground">Notes: {open.notes}</p>
+            )}
+
+            {open.status === "draft" && open.ops_status !== "pending_approval" ? (
+              <div className="mt-5 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void confirmOrder(open.id)}
+                  className="rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground"
+                >
+                  Send to Super Admin
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(null)}
+                  className="rounded-xl border border-border px-4 py-3 text-sm"
+                >
+                  Close
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setOpen(null)}
+                className="mt-5 w-full rounded-xl border border-border py-3 text-sm"
+              >
+                Close
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }

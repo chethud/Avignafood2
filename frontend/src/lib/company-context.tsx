@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { firms, type FirmId } from "./erp-data";
-import { getCompanyId, onAuthChange } from "./api";
+import { getCompanyId, notifyAuthChanged, onAuthChange } from "./api";
 import { applyBrand } from "./brand";
 
 const FIRM_SCOPE_KEY = "firmScope";
@@ -29,14 +29,16 @@ export function getFirmScope(): FirmId {
   return (match?.id as FirmId) || "all";
 }
 
-export function setFirmScope(firm: FirmId) {
+export function setFirmScope(firm: FirmId, opts?: { silent?: boolean }) {
   localStorage.setItem(FIRM_SCOPE_KEY, firm);
-  if (firm === "all") return;
-  const companyId = firms.find((x) => x.id === firm)?.companyId;
-  if (companyId != null) localStorage.setItem("companyId", String(companyId));
+  if (firm !== "all") {
+    const companyId = firms.find((x) => x.id === firm)?.companyId;
+    if (companyId != null) localStorage.setItem("companyId", String(companyId));
+  }
+  if (!opts?.silent) notifyAuthChanged();
 }
 
-/** Call after login once role is known. */
+/** Call after login once role is known. Always resets scope for org-wide roles. */
 export function applyDefaultFirmForRole(role: string) {
   if (ALL_COMPANY_ROLES.has(role)) {
     setFirmScope("all");
@@ -49,6 +51,14 @@ export function applyDefaultFirmForRole(role: string) {
   setFirmScope(firm);
   if (!cid && firms[0]) localStorage.setItem("companyId", String(firms[0].companyId));
   return firm;
+}
+
+/** If org-wide role has no firmScope yet (legacy session), default to All. */
+export function ensureFirmScopeForRole(role: string) {
+  if (typeof window === "undefined") return;
+  if (!ALL_COMPANY_ROLES.has(role)) return;
+  if (localStorage.getItem(FIRM_SCOPE_KEY)) return;
+  setFirmScope("all");
 }
 
 export function CompanyProvider({ children }: { children: ReactNode }) {

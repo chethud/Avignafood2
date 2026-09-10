@@ -165,18 +165,22 @@ def apply_inbound_to_outstanding(db: Session, *, company_id: int, product_id: in
                 so.ops_status = "ready"
 
 
-def outstanding_rows(db: Session, *, company_id: int, org_id: int) -> list[OutstandingDeliveryOut]:
-    rows = (
+def outstanding_rows(db: Session, *, company_id: int | None, org_id: int) -> list[OutstandingDeliveryOut]:
+    q = (
         db.query(SalesOrder)
         .options(joinedload(SalesOrder.lines))
         .filter(
-            SalesOrder.company_id == company_id,
             SalesOrder.organization_id == org_id,
             SalesOrder.status.in_([SalesOrderStatus.CONFIRMED, SalesOrderStatus.INVOICED]),
         )
-        .order_by(SalesOrder.id.desc())
-        .all()
     )
+    if company_id is not None:
+        q = q.filter(SalesOrder.company_id == company_id)
+    rows = q.order_by(SalesOrder.id.desc()).all()
+    companies = {
+        c.id: (c.trade_name or c.legal_name)
+        for c in db.query(Company).filter(Company.organization_id == org_id).all()
+    }
     out: list[OutstandingDeliveryOut] = []
     for so in rows:
         customer = db.query(Customer).filter(Customer.id == so.customer_id).first()
@@ -189,6 +193,8 @@ def outstanding_rows(db: Session, *, company_id: int, org_id: int) -> list[Outst
             out.append(
                 OutstandingDeliveryOut(
                     order_id=so.id,
+                    company_id=so.company_id,
+                    company_name=companies.get(so.company_id),
                     customer_name=customer.name if customer else f"Customer #{so.customer_id}",
                     product_id=ln.product_id,
                     product_name=product.name if product else f"Product #{ln.product_id}",

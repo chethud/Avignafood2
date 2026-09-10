@@ -34,17 +34,25 @@ function LoginPage() {
       });
       if (!res.ok) throw new Error("Invalid credentials");
       const data = await res.json();
-      setAuth(data.access_token, firms[0].companyId);
+      // Token only first — firm scope is set from role (All companies for owner/accounts/supervisor)
+      setAuth(data.access_token);
       const session = await refresh();
       if (!session) throw new Error("Could not load your account");
+      const firm = applyDefaultFirmForRole(session.user.role);
       try {
         const companies = await api<{ id: number }[]>("/api/v1/companies");
-        // Keep a fallback company id for write screens; UI scope may still be All
-        if (companies[0]) localStorage.setItem("companyId", String(companies[0].id));
+        // Fallback company id for write actions when UI is on All companies
+        if (companies[0] && firm === "all") {
+          localStorage.setItem("companyId", String(companies[0].id));
+        } else if (companies[0] && firm !== "all") {
+          const match = firms.find((f) => f.id === firm);
+          localStorage.setItem("companyId", String(match?.companyId ?? companies[0].id));
+        }
       } catch {
-        /* keep default */
+        if (firms[0] && !localStorage.getItem("companyId")) {
+          localStorage.setItem("companyId", String(firms[0].companyId));
+        }
       }
-      applyDefaultFirmForRole(session.user.role);
       navigate({ to: "/" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -62,7 +70,9 @@ function LoginPage() {
           ))}
         </div>
         <div className="mb-1 text-center font-[Fraunces,Georgia,serif] text-3xl tracking-tight">Avighna Group</div>
-        <p className="mb-6 text-center text-sm text-muted-foreground">Sign in — UI follows the company you pick</p>
+        <p className="mb-6 text-center text-sm text-muted-foreground">
+          Sign in — Accounts, Owner & Supervisor open on all companies
+        </p>
         {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
         <label className="mb-3 block text-sm text-muted-foreground">
           Email

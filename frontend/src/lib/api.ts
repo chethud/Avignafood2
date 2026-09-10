@@ -36,7 +36,7 @@ export function isAllCompaniesScope(): boolean {
 
 const AUTH_EVENT = "avighna-auth";
 
-function notifyAuthChanged() {
+export function notifyAuthChanged() {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(AUTH_EVENT));
 }

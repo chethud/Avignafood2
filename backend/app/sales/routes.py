@@ -16,6 +16,7 @@ from app.core.models import (
     Purchase,
     Quotation,
     QuotationStatus,
+    RoleName,
     SalesOrder,
     SalesOrderLine,
     SalesOrderStatus,
@@ -25,6 +26,22 @@ from app.core.models import (
     VehicleSlot,
     Warehouse,
 )
+
+# After Accounts invoices: only Sales / Supervisor allot the truck (Owner/Admin override).
+ALLOT_ROLES = {
+    RoleName.SALES,
+    RoleName.SUPERVISOR,
+    RoleName.OWNER,
+    RoleName.SUPER_ADMIN,
+}
+
+
+def _require_allot_role(auth: AuthContext) -> None:
+    if auth.role not in ALLOT_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Only Sales or Supervisor can allot a driver after Accounts raises the invoice",
+        )
 from app.core.schemas import (
     AllocateDispatchIn,
     OrderDeskOut,
@@ -172,7 +189,7 @@ def list_outstanding_delivery(
     auth: AuthContext = Depends(require_perms("sales.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     return outstanding_rows(db, company_id=company_id, org_id=auth.organization_id)
 
 
@@ -181,7 +198,7 @@ def order_desk(
     auth: AuthContext = Depends(require_perms("sales.view")),
     db: Session = Depends(get_db),
 ):
-    """Order desk: invoiced orders for Sales / Supervisor to confirm stock and book a truck window."""
+    """Order desk: invoiced orders — Supervisor confirms stock, then Sales/Supervisor allot driver."""
     company_id = auth.company_or_all()
     ensure_sales_schema(engine)
     q = (
@@ -195,21 +212,6 @@ def order_desk(
     if company_id is not None:
         q = q.filter(SalesOrder.company_id == company_id)
     rows = q.order_by(SalesOrder.id.desc()).all()
-    from app.sales.ops import line_stock
-
-    changed = False
-    for so in rows:
-        if (so.ops_status or "") == "pending_verify":
-            stock_lines = line_stock(db, so.warehouse_id, so.lines)
-            if stock_lines and all(ln.ok for ln in stock_lines):
-                so.ops_status = "ready"
-                for ln in so.lines:
-                    ln.outstanding_qty = Decimal("0")
-            else:
-                so.ops_status = "shortage"
-            changed = True
-    if changed:
-        db.commit()
     return [desk_out(db, so) for so in rows]
 
 
@@ -458,8 +460,18 @@ def fulfill_outstanding(
     db: Session = Depends(get_db),
 ):
     """After new stock arrives, clear remaining delivery on this order."""
-    company_id = auth.require_company()
-    so = _load_so(db, company_id, auth.organization_id, order_id)
+    company_id = auth.company_or_all()
+    if company_id is None:
+        so = (
+            db.query(SalesOrder)
+            .options(joinedload(SalesOrder.lines))
+            .filter(SalesOrder.id == order_id, SalesOrder.organization_id == auth.organization_id)
+            .first()
+        )
+        if not so:
+            raise HTTPException(status_code=404, detail="Sales order not found")
+    else:
+        so = _load_so(db, company_id, auth.organization_id, order_id)
     for ln in so.lines:
         need = ln.outstanding_qty or Decimal("0")
         if need <= 0:
@@ -481,7 +493,7 @@ def fulfill_outstanding(
         entity_type="sales_order",
         entity_id=so.id,
         organization_id=auth.organization_id,
-        company_id=company_id,
+        company_id=so.company_id,
         user_id=auth.user.id,
     )
     db.commit()
@@ -546,9 +558,12 @@ def allocate_dispatch(
     auth: AuthContext = Depends(require_perms("dispatch.create")),
     db: Session = Depends(get_db),
 ):
-    """Supervisor or Sales assigns a READY order to a logistics window. Stock leaves when the truck goes."""
+    """Sales or Supervisor: pick vehicle, then logistics driver, then book the window."""
+    from app.core.models import Role, User
     from app.logistics.routes import assign_order_to_window
+    from sqlalchemy.orm import joinedload
 
+    _require_allot_role(auth)
     company_id = auth.require_company()
     so = _load_so(db, company_id, auth.organization_id, order_id)
     if so.status != SalesOrderStatus.INVOICED:
@@ -557,29 +572,39 @@ def allocate_dispatch(
         raise HTTPException(status_code=400, detail="Verify stock (and receive purchase if short) before assigning")
     if body.slot not in ("morning", "afternoon", "evening"):
         raise HTTPException(status_code=400, detail="Slot must be morning, afternoon or evening")
+    if not body.vehicle_id:
+        raise HTTPException(status_code=400, detail="Select a vehicle first")
+    if not body.driver_user_id:
+        raise HTTPException(status_code=400, detail="Select a logistics driver after the vehicle")
 
     lines = line_stock(db, so.warehouse_id, so.lines)
     if not all(ln.ok for ln in lines):
         raise HTTPException(status_code=400, detail="Stock still short — raise purchase or receive inward first")
 
-    veh = None
-    if body.vehicle_id:
-        veh = (
-            db.query(Vehicle)
-            .filter(Vehicle.id == body.vehicle_id, Vehicle.organization_id == auth.organization_id, Vehicle.is_active.is_(True))
-            .first()
+    veh = (
+        db.query(Vehicle)
+        .filter(
+            Vehicle.id == body.vehicle_id,
+            Vehicle.organization_id == auth.organization_id,
+            Vehicle.is_active.is_(True),
         )
-        if not veh:
-            raise HTTPException(status_code=404, detail="Vehicle not found")
-    else:
-        veh = (
-            db.query(Vehicle)
-            .filter(Vehicle.organization_id == auth.organization_id, Vehicle.is_active.is_(True))
-            .order_by(Vehicle.id)
-            .first()
-        )
+        .first()
+    )
     if not veh:
-        raise HTTPException(status_code=400, detail="No vehicle in fleet")
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    driver = (
+        db.query(User)
+        .options(joinedload(User.role))
+        .filter(
+            User.id == body.driver_user_id,
+            User.organization_id == auth.organization_id,
+            User.is_active.is_(True),
+        )
+        .first()
+    )
+    if not driver or driver.role.name != RoleName.LOGISTICS:
+        raise HTTPException(status_code=400, detail="Pick an active logistics driver account")
 
     run = assign_order_to_window(
         db,
@@ -590,6 +615,7 @@ def allocate_dispatch(
         slot=body.slot,
         veh=veh,
         user_id=auth.user.id,
+        driver_name=driver.full_name,
     )
     write_audit(
         db,
@@ -599,7 +625,7 @@ def allocate_dispatch(
         organization_id=auth.organization_id,
         company_id=company_id,
         user_id=auth.user.id,
-        detail=f"run={run.number} slot={body.slot} date={body.on_date}",
+        detail=f"run={run.number} slot={body.slot} date={body.on_date} vehicle={veh.plate} driver={driver.full_name}",
     )
     db.commit()
     return desk_out(db, so)
@@ -616,6 +642,7 @@ def reassign_vehicle(
     from app.core.models import LogisticsRun, LogisticsStop
     from app.logistics.routes import BOOKED_RUN, _set_slot
 
+    _require_allot_role(auth)
     company_id = auth.require_company()
     so = _load_so(db, company_id, auth.organization_id, order_id)
     if (so.ops_status or "") != "allocated":
@@ -657,12 +684,30 @@ def reassign_vehicle(
     if not veh:
         raise HTTPException(status_code=404, detail="Vehicle not found")
 
+    driver_name = None
+    if body.driver_user_id:
+        from sqlalchemy.orm import joinedload
+
+        driver = (
+            db.query(User)
+            .options(joinedload(User.role))
+            .filter(
+                User.id == body.driver_user_id,
+                User.organization_id == auth.organization_id,
+                User.is_active.is_(True),
+            )
+            .first()
+        )
+        if not driver or driver.role.name != RoleName.LOGISTICS:
+            raise HTTPException(status_code=400, detail="Pick an active logistics driver account")
+        driver_name = driver.full_name
+
     old_vehicle_id = run.vehicle_id
     slot = getattr(run, "slot", None) or "afternoon"
     if old_vehicle_id and old_vehicle_id != veh.id:
         _set_slot(db, old_vehicle_id, run.on_date, slot, "free")
     run.vehicle_id = veh.id
-    run.driver_name = veh.driver_name or run.driver_name
+    run.driver_name = driver_name or run.driver_name
     _set_slot(db, veh.id, run.on_date, slot, "booked")
 
     load = (
@@ -684,7 +729,7 @@ def reassign_vehicle(
         organization_id=auth.organization_id,
         company_id=company_id,
         user_id=auth.user.id,
-        detail=f"run={run.number} vehicle={veh.plate}",
+        detail=f"run={run.number} vehicle={veh.plate} driver={run.driver_name}",
     )
     db.commit()
     return desk_out(db, so)

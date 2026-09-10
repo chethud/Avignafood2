@@ -28,10 +28,11 @@ import {
 } from "@/components/erp/logistics-flow";
 
 const STEP_INDEX: Record<WorkPhase, number> = {
-  book: 0,
-  leave: 1,
-  deliver: 2,
-  return: 3,
+  pick: 0,
+  load: 1,
+  leave: 2,
+  deliver: 3,
+  return: 4,
 };
 
 type InvoicePeek = {
@@ -115,6 +116,7 @@ export function LogisticsDashboard() {
   const name = me?.user.full_name?.split(" ")[0] || "Logistics";
   const [truck, setTruck] = useState<TruckNow | null>(null);
   const [runs, setRuns] = useState<LogisticsRun[]>([]);
+  const [pickedRunId, setPickedRunId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<{ run: LogisticsRun; stop: LogisticsStop } | null>(null);
@@ -153,9 +155,6 @@ export function LogisticsDashboard() {
 
   const live = truckCopy(truck?.status || "idle");
   const key = truckKey(truck?.status);
-  const run = activeRun(runs, truck?.status || "idle", truck?.run_id);
-  const phase = workPhase(run, truck?.status || "idle");
-  /** Every open assigned trip (all companies / windows), not only the active truck run. */
   const assignedTrips = useMemo(() => {
     const doneStop = new Set(["delivered", "partial", "failed", "completed"]);
     const open = runs
@@ -164,7 +163,7 @@ export function LogisticsDashboard() {
         ...r,
         stops: (r.stops || []).filter((s) => !doneStop.has(s.status)),
       }))
-      .filter((r) => r.stops.length > 0);
+      .filter((r) => r.stops.length > 0 || ["loaded", "loading", "dispatched", "in_transit", "returning"].includes(r.status));
     const slotRank = (s?: string) => (s === "morning" ? 0 : s === "afternoon" ? 1 : s === "evening" ? 2 : 3);
     return [...open].sort((a, b) => {
       const d = String(a.on_date || "").localeCompare(String(b.on_date || ""));
@@ -174,43 +173,87 @@ export function LogisticsDashboard() {
       return a.id - b.id;
     });
   }, [runs]);
+
+  // Restore picked trip from live run / loaded status after refresh
+  useEffect(() => {
+    if (pickedRunId) return;
+    const liveId = truck?.run_id;
+    if (liveId && assignedTrips.some((t) => t.id === liveId)) {
+      setPickedRunId(liveId);
+      return;
+    }
+    const advanced = assignedTrips.find((t) => ["loading", "loaded", "dispatched", "in_transit", "out_for_delivery", "returning"].includes(t.status));
+    if (advanced) setPickedRunId(advanced.id);
+  }, [assignedTrips, truck?.run_id, pickedRunId]);
+
+  const run =
+    (pickedRunId ? assignedTrips.find((t) => t.id === pickedRunId) : null) ||
+    activeRun(assignedTrips, truck?.status || "idle", truck?.run_id);
+  const phase = workPhase(run, truck?.status || "idle", pickedRunId);
   const allStops = useMemo(() => {
     const rows: { run: LogisticsRun; stop: LogisticsStop }[] = [];
-    for (const trip of assignedTrips) {
+    const source = phase === "pick" ? assignedTrips : run ? [run] : [];
+    for (const trip of source) {
       for (const stop of trip.stops || []) rows.push({ run: trip, stop });
     }
     return rows;
-  }, [assignedTrips]);
+  }, [assignedTrips, run, phase]);
   const current = useMemo(() => {
     const openStatuses = new Set(["pending", "out_for_delivery"]);
-    const fromActive = run
-      ? (run.stops || []).find((s) => openStatuses.has(s.status))
-      : null;
-    if (fromActive && run) return { run, stop: fromActive };
-    return allStops.find((r) => openStatuses.has(r.stop.status)) || null;
+    if (!run) return allStops.find((r) => openStatuses.has(r.stop.status)) || null;
+    const fromActive = (run.stops || []).find((s) => openStatuses.has(s.status));
+    return fromActive ? { run, stop: fromActive } : null;
   }, [run, allStops]);
+
+  const selectedTrip =
+    (pickedRunId ? assignedTrips.find((t) => t.id === pickedRunId) : null) || null;
   const nextLabel =
-    phase === "book" && !assignedTrips.length
+    phase === "pick" && !assignedTrips.length
       ? "Waiting for assignment"
-      : phase === "book" && assignedTrips.length
-        ? "Open assigned trip"
-        : phase === "leave"
-          ? "Load & go"
-          : phase === "deliver"
-            ? current
-              ? stopCta(current.stop.status, phase)
-              : "Coming back"
-            : "Arrived at base";
+      : phase === "pick"
+        ? selectedTrip
+          ? "Confirm shipment"
+          : "Select a shipment below"
+        : phase === "load"
+          ? "Confirm load"
+          : phase === "leave"
+            ? "Go"
+            : phase === "deliver"
+              ? current
+                ? stopCta(current.stop.status, phase)
+                : "Coming back"
+              : "Arrived at base";
   const nextHint =
-    phase === "book" && !assignedTrips.length
-      ? "Sales or Supervisor allots date, window and vehicle on Order desk. Then it appears here."
-      : phase === "book" && assignedTrips.length
-        ? `${assignedTrips.length} trip(s) assigned. Tap Load & go on the trip you are driving.`
-        : phase === "leave"
-          ? `${slotLabel(run?.slot)} · ${runDateLabel(run?.on_date)} assigned. Tap Load & go when the truck is loaded.`
-          : phase === "deliver"
-            ? "Deliver each customer in order. Last drop flips the truck to Coming back."
-            : "Drive to base. Tap Arrived at base so Sales sees Idle.";
+    phase === "pick" && !assignedTrips.length
+      ? "Sales or Supervisor allots date, window, vehicle and driver on Order desk."
+      : phase === "pick"
+        ? selectedTrip
+          ? "Shipment selected. Confirm to pick it, then load."
+          : "Select which shipment you are going on."
+        : phase === "load"
+          ? "Load goods on the truck, then confirm load."
+          : phase === "leave"
+            ? "Truck loaded. Tap Go when you leave the yard."
+            : phase === "deliver"
+              ? "Reach each customer and complete the drop."
+              : "All drops done. Drive to base and tap Arrived at base.";
+
+  async function setRunStatus(trip: LogisticsRun, status: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/v1/logistics/runs/${trip.id}/status`, {
+        method: "POST",
+        companyId: trip.company_id ?? undefined,
+        body: JSON.stringify({ status }),
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update trip");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function setLive(status: TruckStateKey) {
     if (status === key) return;
@@ -220,6 +263,7 @@ export function LogisticsDashboard() {
       setTruck(
         await api<TruckNow>("/api/v1/logistics/truck", {
           method: "POST",
+          companyId: run?.company_id ?? undefined,
           body: JSON.stringify({ status }),
         }),
       );
@@ -231,9 +275,24 @@ export function LogisticsDashboard() {
     }
   }
 
+  function selectTrip(trip: LogisticsRun) {
+    setPickedRunId(trip.id);
+    setError("");
+  }
+
+  async function confirmTrip(trip: LogisticsRun) {
+    setPickedRunId(trip.id);
+    if (trip.status === "planned") {
+      await setRunStatus(trip, "loading");
+    }
+  }
+
   async function doNext() {
-    if (phase === "book" && !assignedTrips.length) return;
-    if (phase === "book" && assignedTrips.length) return void setLive("going");
+    if (phase === "pick") {
+      if (!selectedTrip) return;
+      return void confirmTrip(selectedTrip);
+    }
+    if (phase === "load" && run) return void setRunStatus(run, "loaded");
     if (phase === "leave") return void setLive("going");
     if (phase === "deliver" && current) {
       setOpen(current);
@@ -242,7 +301,10 @@ export function LogisticsDashboard() {
       return;
     }
     if (phase === "deliver") return void setLive("coming_back");
-    return void setLive("idle");
+    if (phase === "return") {
+      setPickedRunId(null);
+      return void setLive("idle");
+    }
   }
 
   async function takePhoto(file: File) {
@@ -319,12 +381,12 @@ export function LogisticsDashboard() {
 
       <div className="rounded-2xl border border-border bg-card px-2 pb-3 pt-3">
         <div className="relative h-10" aria-hidden>
-          <div className="absolute left-[12.5%] right-[12.5%] top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-secondary" />
+          <div className="absolute left-[10%] right-[10%] top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-secondary" />
           <div
-            className="absolute left-[12.5%] top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-primary transition-[width] duration-700 ease-out"
-            style={{ width: `${(STEP_INDEX[phase] / 3) * 75}%` }}
+            className="absolute left-[10%] top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-primary transition-[width] duration-700 ease-out"
+            style={{ width: `${(STEP_INDEX[phase] / 4) * 80}%` }}
           />
-          <div className="relative grid h-10 grid-cols-4">
+          <div className="relative grid h-10 grid-cols-5">
             {WORK_STEPS.map((s, i) => (
               <span key={s.key} className="flex items-center justify-center">
                 <span
@@ -338,7 +400,7 @@ export function LogisticsDashboard() {
             ))}
           </div>
           <div
-            className="absolute inset-y-0 left-0 flex w-1/4 items-center justify-center transition-transform duration-700 ease-out"
+            className="absolute inset-y-0 left-0 flex w-1/5 items-center justify-center transition-transform duration-700 ease-out"
             style={{ transform: `translate3d(${STEP_INDEX[phase] * 100}%, 0, 0)` }}
           >
             <span className="flex size-10 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
@@ -346,18 +408,15 @@ export function LogisticsDashboard() {
             </span>
           </div>
         </div>
-        <ol className="mt-1 grid grid-cols-4">
+        <ol className="mt-1 grid grid-cols-5">
           {WORK_STEPS.map((s) => {
             const on = s.key === phase;
-            const done =
-              (s.key === "book" && phase !== "book") ||
-              (s.key === "leave" && (phase === "deliver" || phase === "return")) ||
-              (s.key === "deliver" && phase === "return");
+            const done = STEP_INDEX[s.key] < STEP_INDEX[phase];
             return (
               <li
                 key={s.key}
                 className={cn(
-                  "text-center text-xs font-semibold",
+                  "text-center text-[11px] font-semibold",
                   (on || done) && "text-foreground",
                   !on && !done && "text-muted-foreground",
                 )}
@@ -379,10 +438,11 @@ export function LogisticsDashboard() {
         onClick={phase === "deliver" && current ? () => void doNext() : undefined}
       >
         <p className="text-xs uppercase tracking-wide text-muted-foreground">Truck · {live.title}</p>
-        {(truck?.plate || truck?.driver_name) && (
+        {(truck?.plate || truck?.driver_name || run?.driver_name) && (
           <p className="mt-1 text-sm text-muted-foreground">
-            {truck?.name} · {truck?.plate}
-            {truck?.driver_name ? ` · ${truck.driver_name}` : ""}
+            {truck?.name || "Truck"}
+            {truck?.plate ? ` · ${truck.plate}` : run?.vehicle_plate ? ` · ${run.vehicle_plate}` : ""}
+            {run?.driver_name || truck?.driver_name ? ` · ${run?.driver_name || truck?.driver_name}` : ""}
             {run?.number ? ` · ${run.number}` : ""}
           </p>
         )}
@@ -406,21 +466,19 @@ export function LogisticsDashboard() {
               {nextLabel}
             </button>
           </>
-        ) : phase === "book" && !assignedTrips.length ? (
+        ) : phase === "pick" && !assignedTrips.length ? (
           <p className="mt-3 rounded-2xl border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-            No assignment yet. Sales or Supervisor opens Order desk, picks date + window + vehicle, then Assign.
+            No shipment yet. Sales or Supervisor assigns vehicle + driver on Order desk.
           </p>
         ) : (
           <>
             <p className="mt-1 text-sm text-muted-foreground">{nextHint}</p>
-            {assignedTrips.length > 1 && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                {assignedTrips.length} assigned trips below — all companies / windows.
-              </p>
-            )}
             <button
               type="button"
-              disabled={busy}
+              disabled={
+                busy ||
+                (phase === "pick" && (!assignedTrips.length || !selectedTrip))
+              }
               onClick={() => void doNext()}
               className="mt-3 min-h-12 w-full rounded-2xl bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-60"
             >
@@ -432,11 +490,13 @@ export function LogisticsDashboard() {
 
       <section className="space-y-3">
         <h2 className="text-sm font-medium text-muted-foreground">
-          {!assignedTrips.length
-            ? "No trip yet"
-            : assignedTrips.length === 1
-              ? `${slotLabel(assignedTrips[0].slot)} · ${runDateLabel(assignedTrips[0].on_date)}`
-              : `All assigned trips (${allStops.length} drops)`}
+          {phase === "pick"
+            ? assignedTrips.length
+              ? "Select shipment"
+              : "No trip yet"
+            : run
+              ? runTripHeading(run)
+              : "Your trip"}
         </h2>
         <input
           ref={cardCamRef}
@@ -453,7 +513,7 @@ export function LogisticsDashboard() {
             void takePhoto(f);
           }}
         />
-        {assignedTrips.map((trip) => (
+        {(phase === "pick" ? assignedTrips : run ? [run] : []).map((trip) => (
           <div key={trip.id} className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-2 px-0.5">
               <p className="text-xs font-semibold tracking-wide text-muted-foreground">
@@ -463,10 +523,24 @@ export function LogisticsDashboard() {
                 {[trip.vehicle_plate, trip.driver_name, statusLabel(trip.status)].filter(Boolean).join(" · ")}
               </p>
             </div>
+            {phase === "pick" && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => selectTrip(trip)}
+                className={cn(
+                  "min-h-12 w-full rounded-2xl text-sm font-semibold disabled:opacity-60",
+                  pickedRunId === trip.id
+                    ? "bg-primary text-primary-foreground"
+                    : "border border-border bg-card text-foreground",
+                )}
+              >
+                {pickedRunId === trip.id ? "Selected" : "Select this shipment"}
+              </button>
+            )}
             {(trip.stops || []).map((stop) => {
               const isCurrent = current?.stop.id === stop.id;
-              const tripPhase = workPhase(trip, truck?.status || "idle");
-              const liveBtn = canDeliver(stop.status, tripPhase === "book" ? phase : tripPhase);
+              const liveBtn = canDeliver(stop.status, phase);
               return (
                 <article
                   key={stop.id}
@@ -505,34 +579,38 @@ export function LogisticsDashboard() {
                       {stop.invoice_number || "Invoice"}
                     </button>
                     <span className="flex-1" />
-                    <button
-                      type="button"
-                      className={cn(
-                        "min-h-11 rounded-xl px-3 text-sm font-semibold",
-                        liveBtn ? "bg-primary text-primary-foreground" : "border border-border",
-                      )}
-                      onClick={() => {
-                        setOpen({ run: trip, stop });
-                        setOutcome("delivered");
-                        setStep(liveBtn ? "deliver" : "detail");
-                      }}
-                    >
-                      {stopCta(stop.status, tripPhase === "book" ? phase : tripPhase)}
-                    </button>
-                    {liveBtn && (
-                      <button
-                        type="button"
-                        aria-label="Capture photo"
-                        className="flex size-11 items-center justify-center rounded-xl border border-border"
-                        onClick={() => {
-                          setOpen({ run: trip, stop });
-                          setStep("deliver");
-                          setOutcome("delivered");
-                          setTimeout(() => cardCamRef.current?.click(), 0);
-                        }}
-                      >
-                        <Camera className="size-5" />
-                      </button>
+                    {phase === "deliver" && (
+                      <>
+                        <button
+                          type="button"
+                          className={cn(
+                            "min-h-11 rounded-xl px-3 text-sm font-semibold",
+                            liveBtn ? "bg-primary text-primary-foreground" : "border border-border",
+                          )}
+                          onClick={() => {
+                            setOpen({ run: trip, stop });
+                            setOutcome("delivered");
+                            setStep(liveBtn ? "deliver" : "detail");
+                          }}
+                        >
+                          {stopCta(stop.status, phase)}
+                        </button>
+                        {liveBtn && (
+                          <button
+                            type="button"
+                            aria-label="Capture photo"
+                            className="flex size-11 items-center justify-center rounded-xl border border-border"
+                            onClick={() => {
+                              setOpen({ run: trip, stop });
+                              setStep("deliver");
+                              setOutcome("delivered");
+                              setTimeout(() => cardCamRef.current?.click(), 0);
+                            }}
+                          >
+                            <Camera className="size-5" />
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </article>
@@ -540,7 +618,7 @@ export function LogisticsDashboard() {
             })}
           </div>
         ))}
-        {!allStops.length && (
+        {!assignedTrips.length && (
           <p className="rounded-2xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
             Waiting for Sales or Supervisor to assign an order on Order desk.
           </p>

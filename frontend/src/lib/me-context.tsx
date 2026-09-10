@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, getToken, onAuthChange, type Me } from "@/lib/api";
+import { ensureFirmScopeForRole } from "@/lib/company-context";
 
 type MeCtx = { me: Me | null; loading: boolean; refresh: () => Promise<Me | null> };
 
@@ -18,6 +19,7 @@ export function MeProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     try {
       const data = await api<Me>("/api/v1/auth/me");
+      ensureFirmScopeForRole(data.user.role);
       setMe(data);
       return data;
     } catch {

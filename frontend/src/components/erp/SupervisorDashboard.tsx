@@ -48,7 +48,7 @@ export function SupervisorDashboard() {
     <>
       <PageHeader
         title={`${greeting()}, ${name}`}
-        subtitle="Order desk: confirm stock if short, then allot date + morning/afternoon/evening + vehicle. Sales can allot too — logistics only drives what you assign."
+        subtitle="After Accounts raises the invoice, allot date + window + vehicle + driver here (Sales can too). Logistics only drives what you assign."
       />
 
       <div className="mb-4 flex gap-2">
@@ -130,7 +130,7 @@ export function SupervisorDashboard() {
 
         <Panel title="Supervisor workflow">
           <p className="mb-4 text-sm text-muted-foreground">
-            After Accounts invoices, stock is auto-checked. On Order desk pick date, Morning / Afternoon / Evening, and vehicle — same as Sales. Logistics then sees the assignment.
+            After Accounts invoices, the order appears on Order desk. Allot date, window, vehicle and driver (Sales can too). Logistics then sees the trip.
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
             <Link to="/ops" className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium hover:bg-primary/10">

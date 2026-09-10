@@ -537,6 +537,8 @@ class OrderDeskLine(BaseModel):
 
 class OutstandingDeliveryOut(BaseModel):
     order_id: int
+    company_id: int
+    company_name: str | None = None
     customer_name: str
     product_id: int
     product_name: str
@@ -581,13 +583,24 @@ class RaisePurchaseIn(BaseModel):
 class AllocateDispatchIn(BaseModel):
     on_date: date
     slot: str  # morning | afternoon | evening
-    vehicle_id: int | None = None
+    vehicle_id: int
+    driver_user_id: int  # logistics role user — chosen after vehicle
 
 
 class ReassignVehicleIn(BaseModel):
-    """Change truck before logistics starts the run (planned / loading / loaded only)."""
+    """Change truck / driver before logistics starts the run (planned / loading / loaded only)."""
 
     vehicle_id: int
+    driver_user_id: int | None = None
+
+
+class DriverOut(BaseModel):
+    """Logistics person available to assign after picking a vehicle."""
+
+    id: int
+    full_name: str
+    phone: str | None = None
+    email: str
 
 
 class InvoiceLineAdjustIn(BaseModel):
@@ -648,6 +661,8 @@ class InvoiceOut(ORMModel):
 
 class BillableLoadOut(BaseModel):
     dispatch_id: int
+    company_id: int
+    company_name: str | None = None
     customer_id: int
     customer_name: str
     product: str
@@ -689,6 +704,10 @@ class BillableOrderOut(BaseModel):
 
 class ClientAccountOut(BaseModel):
     customer_id: int
+    customer_ids: list[int] = []
+    company_id: int
+    company_ids: list[int] = []
+    company_name: str | None = None
     name: str
     gstin: str | None = None
     phone: str | None = None
@@ -704,6 +723,10 @@ class ClientAccountOut(BaseModel):
 
 class ClientLedgerOut(BaseModel):
     customer_id: int
+    customer_ids: list[int] = []
+    company_id: int
+    company_ids: list[int] = []
+    company_name: str | None = None
     name: str
     gstin: str | None = None
     phone: str | None = None
@@ -717,6 +740,7 @@ class ClientLedgerOut(BaseModel):
     paid: Decimal = Decimal("0")
     overdue: Decimal = Decimal("0")
     invoices: list[InvoiceOut] = []
+    orders: list[dict] = []
 
 
 class PaymentCreate(BaseModel):
@@ -856,6 +880,7 @@ class LogisticsStopOut(BaseModel):
 
 class LogisticsRunOut(BaseModel):
     id: int
+    company_id: int | None = None
     number: str
     on_date: date
     slot: str = "afternoon"
@@ -982,6 +1007,9 @@ class VehicleAvailOut(BaseModel):
     morning: str
     afternoon: str
     evening: str
+    morning_for: str | None = None
+    afternoon_for: str | None = None
+    evening_for: str | None = None
 
 
 class VehicleLiveSet(BaseModel):

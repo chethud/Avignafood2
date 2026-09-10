@@ -205,12 +205,12 @@ function LogisticsMore() {
                   />
                 </label>
                 <label className="block text-sm">
-                  Driver
+                  Driver (optional note)
                   <input
                     className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2"
                     value={driver}
                     onChange={(e) => setDriver(e.target.value)}
-                    placeholder="Ravi Kumar"
+                    placeholder="Leave blank — assign logistics user on Order desk"
                   />
                 </label>
                 <div className="grid grid-cols-2 gap-2">

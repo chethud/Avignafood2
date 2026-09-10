@@ -20,23 +20,6 @@ export const Route = createFileRoute("/invoices")({
   component: Invoices,
 });
 
-type Billable = {
-  dispatch_id: number;
-  customer_id: number;
-  customer_name: string;
-  product: string;
-  quantity: string | number;
-  unit_price: string | number;
-  estimated_total: string | number;
-  dispatch_status: string;
-  vehicle: string | null;
-  lr: string | null;
-  eta: string | null;
-  notes: string | null;
-  invoiced?: boolean;
-  can_invoice?: boolean;
-};
-
 type BillableOrder = {
   sales_order_id: number;
   company_id: number;
@@ -57,6 +40,7 @@ type BillableOrder = {
 
 type InvoiceRow = {
   id: number;
+  company_id?: number;
   number: string;
   customer_name: string | null;
   invoice_date: string;
@@ -113,11 +97,8 @@ function Invoices() {
   const navigate = useNavigate();
   const { raise } = Route.useSearch();
   const company = firms.find((f) => f.id === firm);
-  const [inbox, setInbox] = useState<Billable[]>([]);
-  const [billable, setBillable] = useState<Billable[]>([]);
   const [orders, setOrders] = useState<BillableOrder[]>([]);
   const [rows, setRows] = useState<InvoiceRow[]>([]);
-  const [selected, setSelected] = useState<Billable | null>(null);
   const [pickOrder, setPickOrder] = useState<BillableOrder | null>(null);
   const [draft, setDraft] = useState<InvoiceDraft | null>(null);
   const [printInv, setPrintInv] = useState<InvoiceRow | null>(null);
@@ -131,14 +112,10 @@ function Invoices() {
 
   async function load() {
     try {
-      const [notice, ready, issued, soReady] = await Promise.all([
-        api<Billable[]>("/api/v1/invoices/dispatch-inbox").catch(() => [] as Billable[]),
-        api<Billable[]>("/api/v1/invoices/billable").catch(() => [] as Billable[]),
+      const [issued, soReady] = await Promise.all([
         api<InvoiceRow[]>("/api/v1/invoices"),
         api<BillableOrder[]>("/api/v1/invoices/billable-orders").catch(() => [] as BillableOrder[]),
       ]);
-      setInbox(notice);
-      setBillable(ready);
       setRows(issued);
       setOrders(soReady);
       setError("");
@@ -229,21 +206,6 @@ function Invoices() {
     });
   }, [raise, orders, busy, pickOrder, navigate]);
 
-  async function generate() {
-    if (!selected) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api(`/api/v1/invoices/from-dispatch/${selected.dispatch_id}`, { method: "POST" });
-      setSelected(null);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not generate invoice");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function generateFromOrder(override = false) {
     if (!pickOrder || !draft) return;
     if (!draft.invoice_date || !draft.due_date) {
@@ -286,7 +248,10 @@ function Invoices() {
 
   async function sendInvoice(row: InvoiceRow, via: "whatsapp" | "email") {
     try {
-      await api(`/api/v1/invoices/${row.id}/send?via=${via}`, { method: "POST" });
+      await api(`/api/v1/invoices/${row.id}/send?via=${via}`, {
+        method: "POST",
+        companyId: row.company_id,
+      });
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not mark sent");
@@ -295,7 +260,11 @@ function Invoices() {
 
   async function openPrint(row: InvoiceRow) {
     try {
-      setPrintInv(await api<InvoiceRow>(`/api/v1/invoices/${row.id}`));
+      setPrintInv(
+        await api<InvoiceRow>(`/api/v1/invoices/${row.id}`, {
+          companyId: row.company_id,
+        }),
+      );
     } catch {
       setPrintInv(row);
     }
@@ -307,18 +276,17 @@ function Invoices() {
     <>
       <PageHeader
         title="Invoices"
-        subtitle="Ready to invoice shows Super Admin–approved orders across companies when scope is All. Enter bill details, then raise the invoice."
+        subtitle="After Owner approves a sales order, it lands here first. Raise the invoice — then Supervisor or Sales allot the driver for Logistics."
       />
-      {error && !selected && !pickOrder && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
+      {error && !pickOrder && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
-      <div className="grid gap-4 sm:grid-cols-4">
-        <Kpi label="Dispatch inbox" value={String(inbox.length)} meta="Loads Accounts can see" />
-        <Kpi label="Ready to invoice" value={String(orders.length || billable.length)} tone={(orders.length || billable.length) ? "warn" : "good"} meta="Approved orders" />
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Kpi label="Ready to invoice" value={String(orders.length)} tone={orders.length ? "warn" : "good"} meta="Owner-approved · your queue" />
         <Kpi label="Invoiced" value={money(invoiced)} meta={`${rows.length} documents`} />
         <Kpi label="Awaiting payment" value={String(open)} tone="warn" />
       </div>
 
-      <Panel title="Ready to invoice" hint="Enter invoice date, due date, rates and remarks, then raise the bill" className="mt-6">
+      <Panel title="Ready to invoice" hint="Owner approved — raise GST invoice first. Driver allotment happens after this on Order desk." className="mt-6">
         <Table head={["Company", "Order", "Customer", "Lines", "Est. total", "Stage", "Credit", ""]}>
           {orders.map((o) => (
             <tr key={o.sales_order_id}>
@@ -343,62 +311,6 @@ function Invoices() {
           <p className="mt-3 text-sm text-muted-foreground">No approved orders waiting to bill. Super Admin must approve a sales order first.</p>
         )}
       </Panel>
-
-      <Panel title="Dispatch inbox" hint="Operational status only — Accounts does not assign vehicles" className="mt-6">
-        <Table head={["Customer", "Product", "Qty", "Stage", "Vehicle / LR", "Billing"]}>
-          {inbox.map((b) => (
-            <tr key={b.dispatch_id}>
-              <Td className="font-medium">{b.customer_name}</Td>
-              <Td className="text-muted-foreground">{b.product}</Td>
-              <Td className="tabular-nums">{Number(b.quantity)}</Td>
-              <Td>
-                <Badge tone={b.dispatch_status === "Delivered" ? "good" : b.dispatch_status === "Pending" ? "neutral" : "warn"}>
-                  {b.dispatch_status}
-                </Badge>
-              </Td>
-              <Td className="text-xs text-muted-foreground">{[b.vehicle, b.lr].filter(Boolean).join(" · ") || "—"}</Td>
-              <Td>
-                {b.invoiced ? (
-                  <Badge tone="good">Invoiced</Badge>
-                ) : b.can_invoice ? (
-                  <button type="button" className="text-sm text-primary hover:underline" onClick={() => setSelected(b)}>
-                    Invoice now
-                  </button>
-                ) : (
-                  <span className="text-xs text-muted-foreground">Raise from the order queue</span>
-                )}
-              </Td>
-            </tr>
-          ))}
-        </Table>
-        {!inbox.length && <p className="mt-3 text-sm text-muted-foreground">No dispatch loads yet. They appear here when supervisor / logistics books a movement.</p>}
-      </Panel>
-
-      {billable.length > 0 && (
-      <Panel title="Dispatch-level billing" hint="Fallback when a load has no sales order. Prefer Ready to invoice above." className="mt-6">
-        <Table head={["Customer", "Product", "Qty", "Est. value", "Stage", "Vehicle / LR", ""]}>
-          {billable.map((b) => (
-            <tr key={b.dispatch_id} className="cursor-pointer hover:bg-secondary/50" onClick={() => setSelected(b)}>
-              <Td className="font-medium">{b.customer_name}</Td>
-              <Td className="text-muted-foreground">{b.product}</Td>
-              <Td className="tabular-nums">{Number(b.quantity)}</Td>
-              <Td className="tabular-nums">{money(b.estimated_total)}</Td>
-              <Td>
-                <Badge tone={b.dispatch_status === "Delivered" ? "good" : "warn"}>{b.dispatch_status}</Badge>
-              </Td>
-              <Td className="text-muted-foreground text-xs">
-                {[b.vehicle, b.lr].filter(Boolean).join(" · ") || "—"}
-              </Td>
-              <Td>
-                <button type="button" className="text-sm text-primary hover:underline" onClick={(e) => { e.stopPropagation(); setSelected(b); }}>
-                  Invoice
-                </button>
-              </Td>
-            </tr>
-          ))}
-        </Table>
-      </Panel>
-      )}
 
       <Panel title="Issued invoices" hint="Invoice ↔ sales order ↔ dispatch. Filters stay on this company." className="mt-6">
         <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
@@ -483,44 +395,6 @@ function Invoices() {
         {!visible.length && <p className="mt-3 text-sm text-muted-foreground">No invoices match these filters.</p>}
       </Panel>
 
-      {selected && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={() => setSelected(null)} />
-          <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl">
-            <h2 className="text-lg font-semibold">Generate invoice</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Order details for Tally / GST bill. This ERP only raises the invoice.</p>
-            <dl className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Customer</dt><dd className="font-medium">{selected.customer_name}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Product</dt><dd>{selected.product}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Quantity</dt><dd className="tabular-nums">{Number(selected.quantity)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Rate</dt><dd className="tabular-nums">{money(selected.unit_price)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Est. total (incl. GST)</dt><dd className="tabular-nums font-medium">{money(selected.estimated_total)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Dispatch stage</dt><dd>{selected.dispatch_status}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Vehicle</dt><dd>{selected.vehicle || "—"}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">LR</dt><dd>{selected.lr || "—"}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">ETA</dt><dd>{selected.eta || "—"}</dd></div>
-              {selected.notes && (
-                <div><dt className="text-muted-foreground">Notes</dt><dd className="mt-0.5">{selected.notes}</dd></div>
-              )}
-            </dl>
-            {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-            <div className="mt-5 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void generate()}
-                className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
-              >
-                {busy ? "Creating…" : "Generate invoice"}
-              </button>
-              <button type="button" onClick={() => setSelected(null)} className="rounded-lg border border-border py-2.5 text-sm">
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {pickOrder && draft && (
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
           <button
@@ -534,6 +408,9 @@ function Invoices() {
           />
           <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-lg sm:rounded-2xl">
             <h2 className="text-lg font-semibold">Enter invoice details</h2>
+            <p className="mt-2 text-xl font-semibold tracking-tight text-foreground">
+              {pickOrder.company_name || firmLabelByCompanyId(pickOrder.company_id)}
+            </p>
             <p className="mt-1 text-sm text-muted-foreground">
               SO-{pickOrder.sales_order_id} · {pickOrder.customer_name} — fill dates, lines and remarks, then raise.
             </p>
@@ -586,45 +463,42 @@ function Invoices() {
               />
             </label>
             <div className="mt-4 space-y-3">
-              <p className="text-sm font-medium">Lines</p>
+              <div className="flex items-baseline justify-between gap-2">
+                <p className="text-sm font-medium">Lines</p>
+                <p className="text-xs text-muted-foreground">Qty and rate from the order — edit GST only</p>
+              </div>
               {draft.lines.map((ln, idx) => (
                 <div key={ln.product_id} className="rounded-xl border border-border p-3">
-                  <p className="text-sm font-medium">{ln.product_name}</p>
+                  <p className="text-sm font-medium text-foreground">{ln.product_name}</p>
                   <div className="mt-2 grid grid-cols-3 gap-2">
-                    <label className="text-xs text-muted-foreground">
-                      Qty
+                    <div className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">Qty</span>
+                      <p className="min-h-11 rounded-lg border border-transparent bg-secondary/60 px-2 py-2 text-sm font-medium tabular-nums text-foreground">
+                        {ln.quantity}
+                      </p>
+                    </div>
+                    <div className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">Rate</span>
+                      <p className="min-h-11 rounded-lg border border-transparent bg-secondary/60 px-2 py-2 text-sm font-medium tabular-nums text-foreground">
+                        {ln.unit_price}
+                      </p>
+                    </div>
+                    <label className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">GST %</span>
                       <input
-                        className="mt-1 w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
-                        value={ln.quantity}
-                        onChange={(e) => {
-                          const lines = [...draft.lines];
-                          lines[idx] = { ...ln, quantity: e.target.value };
-                          setDraft({ ...draft, lines });
-                        }}
-                      />
-                    </label>
-                    <label className="text-xs text-muted-foreground">
-                      Rate
-                      <input
-                        className="mt-1 w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
-                        value={ln.unit_price}
-                        onChange={(e) => {
-                          const lines = [...draft.lines];
-                          lines[idx] = { ...ln, unit_price: e.target.value };
-                          setDraft({ ...draft, lines });
-                        }}
-                      />
-                    </label>
-                    <label className="text-xs text-muted-foreground">
-                      GST %
-                      <input
-                        className="mt-1 w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        className="min-h-11 w-full rounded-lg border border-border bg-background px-2 py-2 text-sm font-medium text-foreground outline-none ring-offset-background focus:border-primary focus:ring-2 focus:ring-primary/30"
                         value={ln.gst_rate}
                         onChange={(e) => {
-                          const lines = [...draft.lines];
-                          lines[idx] = { ...ln, gst_rate: e.target.value };
+                          const next = e.target.value.replace(/[^\d.]/g, "");
+                          const lines = draft.lines.map((row, i) =>
+                            i === idx ? { ...row, gst_rate: next } : row,
+                          );
                           setDraft({ ...draft, lines });
                         }}
+                        onFocus={(e) => e.currentTarget.select()}
                       />
                     </label>
                   </div>
