@@ -46,6 +46,7 @@ from app.core.schemas import (
     AllocateDispatchIn,
     OrderDeskOut,
     OutstandingDeliveryOut,
+    PlanDeliveryIn,
     RaisePurchaseIn,
     ReassignVehicleIn,
     SalesOrderCreate,
@@ -53,7 +54,18 @@ from app.core.schemas import (
 )
 from app.inventory.routes import _default_warehouse
 from app.sales.ensure_schema import ensure_sales_schema
-from app.sales.ops import desk_out, line_stock, on_hand, outstanding_rows, qty_short
+from app.sales.ops import (
+    apply_delivery_plan,
+    can_raise_invoice,
+    delivery_labels,
+    desk_out,
+    line_stock,
+    normalize_delivery_mode,
+    on_hand,
+    outstanding_rows,
+    publish_planned_delivery_to_driver,
+    qty_short,
+)
 
 router = APIRouter(prefix="/sales-orders", tags=["sales"])
 
@@ -139,6 +151,7 @@ def _out(so: SalesOrder, warnings: list[str] | None = None, customer_name: str |
             }
             for ln in so.lines
         ]
+    v_label, d_label = delivery_labels(db, so) if db else (None, None)
     return SalesOrderOut(
         id=so.id,
         company_id=so.company_id,
@@ -157,8 +170,15 @@ def _out(so: SalesOrder, warnings: list[str] | None = None, customer_name: str |
         created_at=so.created_at,
         confirmed_at=so.confirmed_at,
         logistics_status=logistics_status,
-        vehicle=vehicle,
+        vehicle=vehicle or v_label,
         eta=eta,
+        delivery_mode=normalize_delivery_mode(getattr(so, "delivery_mode", None)) or "own_vehicle",
+        planned_vehicle_id=getattr(so, "planned_vehicle_id", None),
+        planned_driver_user_id=getattr(so, "planned_driver_user_id", None),
+        planned_slot=getattr(so, "planned_slot", None),
+        planned_on_date=getattr(so, "planned_on_date", None),
+        driver_name=d_label,
+        can_invoice=can_raise_invoice(so)[0],
     )
 
 
@@ -263,6 +283,23 @@ def create_order(
         status=SalesOrderStatus.DRAFT,
         ops_status="pending_approval",
     )
+    apply_delivery_plan(
+        so,
+        delivery_mode=body.delivery_mode
+        or (getattr(quotation, "delivery_mode", None) if quotation else None),
+        planned_vehicle_id=body.planned_vehicle_id
+        if body.planned_vehicle_id is not None
+        else (getattr(quotation, "planned_vehicle_id", None) if quotation else None),
+        planned_driver_user_id=body.planned_driver_user_id
+        if body.planned_driver_user_id is not None
+        else (getattr(quotation, "planned_driver_user_id", None) if quotation else None),
+        planned_slot=body.planned_slot
+        if body.planned_slot is not None
+        else (getattr(quotation, "planned_slot", None) if quotation else None),
+        planned_on_date=body.planned_on_date
+        if body.planned_on_date is not None
+        else (getattr(quotation, "planned_on_date", None) if quotation else None),
+    )
     db.add(so)
     db.flush()
     for line in lines:
@@ -366,6 +403,14 @@ def approve_order(
     so.status = SalesOrderStatus.CONFIRMED
     so.confirmed_at = datetime.now(timezone.utc)
     so.ops_status = "awaiting_invoice"
+    # If Sales already planned truck+driver at order time, publish to driver now (not before).
+    published = publish_planned_delivery_to_driver(
+        db,
+        org_id=auth.organization_id,
+        company_id=company_id,
+        so=so,
+        user_id=auth.user.id,
+    )
     write_audit(
         db,
         action="approve",
@@ -374,7 +419,7 @@ def approve_order(
         organization_id=auth.organization_id,
         company_id=company_id,
         user_id=auth.user.id,
-        detail=credit_note,
+        detail=(credit_note or "") + (" · published to driver" if published else ""),
     )
     db.commit()
     so = db.query(SalesOrder).options(joinedload(SalesOrder.lines)).filter(SalesOrder.id == so.id).first()
@@ -435,10 +480,21 @@ def verify_stock(
     if so.status != SalesOrderStatus.INVOICED:
         raise HTTPException(status_code=400, detail="Accounts must raise the invoice before stock confirm")
     lines = line_stock(db, so.warehouse_id, so.lines)
-    so.ops_status = "ready" if all(ln.ok for ln in lines) else "shortage"
-    if so.ops_status == "ready":
-        for ln in so.lines:
-            ln.outstanding_qty = Decimal("0")
+    stock_ok = all(ln.ok for ln in lines)
+    # Keep allocated/dispatched if truck was published to the driver after Owner approve.
+    prior = so.ops_status or ""
+    if prior in ("allocated", "dispatched"):
+        if not stock_ok:
+            so.ops_status = "shortage"
+        elif stock_ok:
+            for ln in so.lines:
+                ln.outstanding_qty = Decimal("0")
+            # leave ops_status as allocated/dispatched
+    else:
+        so.ops_status = "ready" if stock_ok else "shortage"
+        if so.ops_status == "ready":
+            for ln in so.lines:
+                ln.outstanding_qty = Decimal("0")
     write_audit(
         db,
         action="verify_stock",
@@ -486,7 +542,8 @@ def fulfill_outstanding(
             )
         ln.outstanding_qty = Decimal("0")
     if all((ln.outstanding_qty or Decimal("0")) <= 0 for ln in so.lines):
-        so.ops_status = "ready"
+        if (so.ops_status or "") not in ("allocated", "dispatched"):
+            so.ops_status = "ready"
     write_audit(
         db,
         action="fulfill_outstanding",
@@ -551,6 +608,100 @@ def raise_purchase(
     return desk_out(db, so)
 
 
+@router.post("/{order_id}/plan-delivery", response_model=OrderDeskOut)
+def plan_delivery(
+    order_id: int,
+    body: PlanDeliveryIn,
+    auth: AuthContext = Depends(require_perms("sales.create")),
+    db: Session = Depends(get_db),
+):
+    """Sales can set manufacturer vs own vehicle (+ optional truck/driver) any time before logistics starts."""
+    _require_allot_role(auth)
+    company_id = auth.require_company()
+    so = _load_so(db, company_id, auth.organization_id, order_id)
+    if (so.ops_status or "") in ("allocated", "dispatched"):
+        raise HTTPException(status_code=400, detail="Delivery already booked with logistics — use reassign if needed")
+    mode = normalize_delivery_mode(body.delivery_mode)
+    if mode == "manufacturer":
+        apply_delivery_plan(so, delivery_mode="manufacturer")
+        write_audit(
+            db,
+            action="plan_delivery",
+            entity_type="sales_order",
+            entity_id=so.id,
+            organization_id=auth.organization_id,
+            company_id=company_id,
+            user_id=auth.user.id,
+            detail="manufacturer",
+        )
+        db.commit()
+        return desk_out(db, so)
+
+    if body.vehicle_id or body.driver_user_id:
+        if not body.vehicle_id or not body.driver_user_id:
+            raise HTTPException(status_code=400, detail="Pick both vehicle and logistics driver")
+        if body.slot and body.slot not in ("morning", "afternoon", "evening"):
+            raise HTTPException(status_code=400, detail="Slot must be morning, afternoon or evening")
+        veh = (
+            db.query(Vehicle)
+            .filter(
+                Vehicle.id == body.vehicle_id,
+                Vehicle.organization_id == auth.organization_id,
+                Vehicle.is_active.is_(True),
+            )
+            .first()
+        )
+        if not veh:
+            raise HTTPException(status_code=404, detail="Vehicle not found")
+        driver = (
+            db.query(User)
+            .options(joinedload(User.role))
+            .filter(
+                User.id == body.driver_user_id,
+                User.organization_id == auth.organization_id,
+                User.is_active.is_(True),
+            )
+            .first()
+        )
+        if not driver or driver.role.name != RoleName.LOGISTICS:
+            raise HTTPException(status_code=400, detail="Pick an active logistics driver account")
+        apply_delivery_plan(
+            so,
+            delivery_mode="own_vehicle",
+            planned_vehicle_id=body.vehicle_id,
+            planned_driver_user_id=body.driver_user_id,
+            planned_slot=body.slot,
+            planned_on_date=body.on_date,
+        )
+        detail = f"vehicle={veh.plate} driver={driver.full_name}"
+        # After Owner approval, assigning truck should appear on the driver's phone.
+        published = publish_planned_delivery_to_driver(
+            db,
+            org_id=auth.organization_id,
+            company_id=company_id,
+            so=so,
+            user_id=auth.user.id,
+        )
+        if published:
+            detail += " · published to driver"
+    else:
+        apply_delivery_plan(so, delivery_mode="own_vehicle")
+        detail = "own_vehicle (no truck yet)"
+
+    write_audit(
+        db,
+        action="plan_delivery",
+        entity_type="sales_order",
+        entity_id=so.id,
+        organization_id=auth.organization_id,
+        company_id=company_id,
+        user_id=auth.user.id,
+        detail=detail,
+    )
+    db.commit()
+    return desk_out(db, so)
+
+
 @router.post("/{order_id}/allocate", response_model=OrderDeskOut)
 def allocate_dispatch(
     order_id: int,
@@ -558,7 +709,11 @@ def allocate_dispatch(
     auth: AuthContext = Depends(require_perms("dispatch.create")),
     db: Session = Depends(get_db),
 ):
-    """Sales or Supervisor: pick vehicle, then logistics driver, then book the window."""
+    """Sales or Supervisor: pick vehicle, then logistics driver, then book the window.
+
+    Allowed after Owner approval (CONFIRMED) or after Accounts invoices — stock must be ready.
+    Planning vehicle earlier (without booking a run) uses /plan-delivery.
+    """
     from app.core.models import Role, User
     from app.logistics.routes import assign_order_to_window
     from sqlalchemy.orm import joinedload
@@ -566,8 +721,10 @@ def allocate_dispatch(
     _require_allot_role(auth)
     company_id = auth.require_company()
     so = _load_so(db, company_id, auth.organization_id, order_id)
-    if so.status != SalesOrderStatus.INVOICED:
-        raise HTTPException(status_code=400, detail="Accounts must raise the invoice before assigning a driver")
+    if normalize_delivery_mode(getattr(so, "delivery_mode", None)) == "manufacturer":
+        raise HTTPException(status_code=400, detail="Manufacturer delivery — no vehicle allotment needed")
+    if so.status not in (SalesOrderStatus.INVOICED, SalesOrderStatus.CONFIRMED):
+        raise HTTPException(status_code=400, detail="Owner must approve the order before assigning a driver")
     if (so.ops_status or "") != "ready":
         raise HTTPException(status_code=400, detail="Verify stock (and receive purchase if short) before assigning")
     if body.slot not in ("morning", "afternoon", "evening"):
@@ -605,6 +762,15 @@ def allocate_dispatch(
     )
     if not driver or driver.role.name != RoleName.LOGISTICS:
         raise HTTPException(status_code=400, detail="Pick an active logistics driver account")
+
+    apply_delivery_plan(
+        so,
+        delivery_mode="own_vehicle",
+        planned_vehicle_id=body.vehicle_id,
+        planned_driver_user_id=body.driver_user_id,
+        planned_slot=body.slot,
+        planned_on_date=body.on_date,
+    )
 
     run = assign_order_to_window(
         db,

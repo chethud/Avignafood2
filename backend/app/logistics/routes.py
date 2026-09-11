@@ -34,6 +34,7 @@ from app.core.schemas import (
     LogisticsStatusIn,
     LogisticsStopOut,
     ReadyOrderOut,
+    InvoiceOut,
 )
 
 router = APIRouter(prefix="/logistics", tags=["logistics"])
@@ -309,13 +310,32 @@ def assign_order_to_window(
     veh: Vehicle | None,
     user_id: int | None,
     driver_name: str | None = None,
+    require_ready: bool = True,
 ) -> LogisticsRun:
-    """Sales / Supervisor assigns a READY order to a window: vehicle first, then logistics driver."""
+    """Assign order to a logistics window (vehicle + driver).
+
+    require_ready=True: stock must be READY (classic Order desk allot).
+    require_ready=False: Owner-approved order with planned truck — visible to driver
+    even before Accounts invoices / stock verify.
+    """
     slot = (slot or "afternoon").lower()
     if slot not in SLOTS:
         raise HTTPException(status_code=400, detail="Window must be morning, afternoon or evening")
-    if (so.ops_status or "") != "ready":
-        raise HTTPException(status_code=400, detail="Only READY orders can be assigned to logistics")
+    status = so.status if hasattr(so.status, "value") else so.status
+    status_val = status.value if hasattr(status, "value") else str(status)
+    if require_ready:
+        if (so.ops_status or "") != "ready":
+            raise HTTPException(status_code=400, detail="Only READY orders can be assigned to logistics")
+    else:
+        if status_val not in ("confirmed", "invoiced"):
+            raise HTTPException(
+                status_code=400,
+                detail="Owner must approve the order before the driver can see this assignment",
+            )
+        mode = (getattr(so, "delivery_mode", None) or "own_vehicle")
+        mode = str(mode).strip().lower().replace("-", "_").replace(" ", "_")
+        if mode in ("manufacturer", "manufactor", "manuvacture", "manufacture"):
+            raise HTTPException(status_code=400, detail="Manufacturer delivery — no fleet assignment")
     driver = (driver_name or "").strip() or (veh.driver_name if veh else None) or None
     if not driver:
         raise HTTPException(status_code=400, detail="Select a logistics driver after the vehicle")
@@ -431,6 +451,8 @@ def ready_orders(
     )
     out: list[ReadyOrderOut] = []
     for so in rows:
+        if (getattr(so, "delivery_mode", None) or "own_vehicle") == "manufacturer":
+            continue
         if so.id in taken:
             continue
         customer = db.query(Customer).filter(Customer.id == so.customer_id).first()
@@ -499,6 +521,26 @@ def list_runs(
     elif on_date:
         q = q.filter(LogisticsRun.on_date == on_date)
     rows = q.order_by(LogisticsRun.on_date.asc(), LogisticsRun.id.asc()).all()
+    # Drivers must not see drops for orders still waiting Owner approval (draft).
+    if open_only or auth.role == RoleName.LOGISTICS:
+        filtered: list[LogisticsRun] = []
+        for run in rows:
+            keep_stops = []
+            for stop in run.stops or []:
+                so = db.query(SalesOrder).filter(SalesOrder.id == stop.sales_order_id).first()
+                if not so:
+                    continue
+                st = so.status.value if hasattr(so.status, "value") else str(so.status)
+                if st in ("confirmed", "invoiced"):
+                    keep_stops.append(stop)
+            if keep_stops:
+                run.stops = keep_stops
+                filtered.append(run)
+            elif not (run.stops or []):
+                # Empty open run (vehicle booked, no stops yet) — keep for desk, hide from open_only drivers
+                if not open_only:
+                    filtered.append(run)
+        rows = filtered
     return [_run_out(db, r) for r in rows]
 
 
@@ -838,6 +880,41 @@ def list_windows(
     return {"on_date": on_date.isoformat(), "truck": truck, "windows": windows}
 
 
+@router.get("/stops/{stop_id}/invoice", response_model=InvoiceOut)
+def stop_invoice(
+    stop_id: int,
+    auth: AuthContext = Depends(require_perms("invoices.view")),
+    db: Session = Depends(get_db),
+):
+    """Driver / logistics: view the tax invoice for this drop (by sales order)."""
+    from app.invoices.routes import _out, _product_names
+
+    stop = db.query(LogisticsStop).filter(LogisticsStop.id == stop_id).first()
+    if not stop:
+        raise HTTPException(status_code=404, detail="Stop not found")
+    run = db.query(LogisticsRun).filter(LogisticsRun.id == stop.run_id).first()
+    if not run or run.organization_id != auth.organization_id:
+        raise HTTPException(status_code=404, detail="Stop not found")
+    if auth.role != RoleName.LOGISTICS:
+        scoped = auth.require_company()
+        if run.company_id != scoped:
+            raise HTTPException(status_code=404, detail="Stop not found")
+    inv = (
+        db.query(Invoice)
+        .options(joinedload(Invoice.lines))
+        .filter(
+            Invoice.sales_order_id == stop.sales_order_id,
+            Invoice.organization_id == auth.organization_id,
+        )
+        .order_by(Invoice.id.desc())
+        .first()
+    )
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not raised yet for this order")
+    customer = db.query(Customer).filter(Customer.id == inv.customer_id).first()
+    return _out(inv, customer, _product_names(db, [inv]))
+
+
 @router.post("/stops/{stop_id}/deliver", response_model=LogisticsRunOut)
 def deliver_stop(
     stop_id: int,
@@ -864,6 +941,8 @@ def deliver_stop(
         raise HTTPException(status_code=400, detail="Outcome must be delivered, partial or failed")
     if outcome == "failed" and not (body.fail_reason or "").strip():
         raise HTTPException(status_code=400, detail="Choose a failure reason")
+    if not (body.pod_url or "").strip():
+        raise HTTPException(status_code=400, detail="Photo is required for delivery")
     stop.status = outcome
     stop.receiver_name = body.receiver_name
     stop.pod_url = body.pod_url

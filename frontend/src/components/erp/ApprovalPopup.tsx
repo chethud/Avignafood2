@@ -36,6 +36,11 @@ export type PendingItem = {
   salesperson: string;
   lines?: ApprovalLine[];
   notes?: string | null;
+  deliveryMode?: string | null;
+  vehicle?: string | null;
+  driverName?: string | null;
+  plannedSlot?: string | null;
+  plannedOnDate?: string | null;
 };
 
 type OrderLine = {
@@ -64,6 +69,13 @@ type Order = {
   notes?: string | null;
   created_by_name?: string | null;
   lines: OrderLine[];
+  delivery_mode?: string | null;
+  vehicle?: string | null;
+  driver_name?: string | null;
+  planned_slot?: string | null;
+  planned_on_date?: string | null;
+  planned_vehicle_id?: number | null;
+  planned_driver_user_id?: number | null;
 };
 
 type Customer = { id: number; name: string };
@@ -133,6 +145,11 @@ export function usePendingApprovals() {
             salesperson: o.created_by_name || "Sales",
             lines,
             notes: o.notes,
+            deliveryMode: o.delivery_mode || null,
+            vehicle: o.vehicle || null,
+            driverName: o.driver_name || null,
+            plannedSlot: o.planned_slot || null,
+            plannedOnDate: o.planned_on_date || null,
           };
         });
 
@@ -161,20 +178,48 @@ export function usePendingApprovals() {
 
 function OrderApprovalBody({ item }: { item: PendingItem }) {
   const lines = item.lines || [];
+  const orderTotal = lines.reduce((sum, ln) => sum + ln.quantity * ln.requested_price, 0);
   return (
     <div className="mt-4 space-y-3">
       <dl className="grid grid-cols-2 gap-2 text-sm">
-        <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+        <div className="col-span-2 rounded-xl bg-secondary/60 px-3 py-3">
           <dt className="text-xs text-muted-foreground">Company</dt>
-          <dd className="mt-0.5 font-medium">{item.companyName || firmLabelByCompanyId(item.companyId)}</dd>
+          <dd className="mt-1 text-xl font-semibold leading-snug tracking-tight sm:text-2xl">
+            {item.companyName || firmLabelByCompanyId(item.companyId)}
+          </dd>
         </div>
         <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
           <dt className="text-xs text-muted-foreground">From salesperson</dt>
           <dd className="mt-0.5 font-medium">{item.salesperson}</dd>
         </div>
-        <div className="rounded-xl bg-secondary/60 px-3 py-2.5 col-span-2">
+        <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
           <dt className="text-xs text-muted-foreground">Customer (for whom)</dt>
-          <dd className="mt-0.5 font-medium">{item.customer}</dd>
+          <dd className="mt-0.5 text-base font-semibold leading-snug">{item.customer}</dd>
+        </div>
+        <div className="col-span-2 rounded-xl border border-primary/25 bg-primary/10 px-3 py-3">
+          <dt className="text-xs text-muted-foreground">Order total (requested rates)</dt>
+          <dd className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{money(orderTotal)}</dd>
+        </div>
+        <div className="col-span-2 rounded-xl bg-secondary/60 px-3 py-2.5">
+          <dt className="text-xs text-muted-foreground">Delivery</dt>
+          <dd className="mt-0.5 font-medium leading-snug">
+            {item.deliveryMode === "manufacturer" ? (
+              "Manufacturer — no fleet"
+            ) : item.vehicle || item.driverName ? (
+              <>
+                {[item.vehicle, item.driverName].filter(Boolean).join(" · ")}
+                {(item.plannedOnDate || item.plannedSlot) && (
+                  <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                    {[item.plannedOnDate, item.plannedSlot].filter(Boolean).join(" · ")}
+                  </span>
+                )}
+              </>
+            ) : item.deliveryMode === "own_vehicle" ? (
+              "Own vehicle — not assigned yet"
+            ) : (
+              "Not set"
+            )}
+          </dd>
         </div>
       </dl>
 
@@ -186,11 +231,14 @@ function OrderApprovalBody({ item }: { item: PendingItem }) {
             <li key={`${ln.product_name}-${idx}`} className="rounded-xl border border-border bg-background/80 p-3">
               <div className="flex items-start justify-between gap-2">
                 <p className="font-medium leading-snug">{ln.product_name}</p>
-                {!ln.stock_ok && (
-                  <span className="shrink-0 rounded-md bg-destructive/10 px-2 py-0.5 text-[0.65rem] font-medium text-destructive">
-                    Extra qty
-                  </span>
-                )}
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  {!ln.stock_ok && (
+                    <span className="rounded-md bg-destructive/10 px-2 py-0.5 text-[0.65rem] font-medium text-destructive">
+                      Extra qty
+                    </span>
+                  )}
+                  <p className="text-sm font-semibold tabular-nums">{money(ln.quantity * ln.requested_price)}</p>
+                </div>
               </div>
               <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
                 <div>
@@ -241,6 +289,13 @@ function OrderApprovalBody({ item }: { item: PendingItem }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {lines.length > 0 && (
+        <div className="flex items-center justify-between rounded-xl bg-secondary/60 px-3 py-2.5 text-sm">
+          <span className="text-muted-foreground">Order total</span>
+          <span className="text-lg font-semibold tabular-nums">{money(orderTotal)}</span>
+        </div>
       )}
 
       {item.notes ? <p className="text-xs text-muted-foreground">Notes: {item.notes}</p> : null}

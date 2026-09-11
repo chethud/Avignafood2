@@ -98,6 +98,13 @@ function Field() {
   const [cart, setCart] = useState<Record<string, CartLine>>({});
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
   const [rateDraft, setRateDraft] = useState<Record<string, string>>({});
+  const [deliveryMode, setDeliveryMode] = useState<"own_vehicle" | "manufacturer">("own_vehicle");
+  const [planDate, setPlanDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [planSlot, setPlanSlot] = useState<"morning" | "afternoon" | "evening" | "">("");
+  const [planVehicleId, setPlanVehicleId] = useState<number | "">("");
+  const [planDriverId, setPlanDriverId] = useState<number | "">("");
+  const [fleet, setFleet] = useState<{ vehicle_id: number; name: string; plate: string }[]>([]);
+  const [drivers, setDrivers] = useState<{ id: number; full_name: string; phone: string | null }[]>([]);
 
   useEffect(() => {
     if (!companyId) {
@@ -117,7 +124,34 @@ function Field() {
     setAcceptedOver({});
     setOverAsk(null);
     setItemSearch("");
+    setDeliveryMode("own_vehicle");
+    setPlanSlot("");
+    setPlanVehicleId("");
+    setPlanDriverId("");
   }, [companyId]);
+
+  useEffect(() => {
+    if (!companyId || purpose !== "new_order") {
+      setFleet([]);
+      setDrivers([]);
+      return;
+    }
+    const onDate = planDate || new Date().toISOString().slice(0, 10);
+    api<{ vehicle_id: number; name: string; plate: string }[]>(`/api/v1/vehicles/availability/all?on_date=${onDate}`, {
+      companyId,
+    })
+      .then(setFleet)
+      .catch(() =>
+        api<{ vehicle_id: number; name: string; plate: string }>(`/api/v1/vehicles/availability?on_date=${onDate}`, {
+          companyId,
+        })
+          .then((one) => setFleet([one]))
+          .catch(() => setFleet([])),
+      );
+    api<{ id: number; full_name: string; phone: string | null }[]>("/api/v1/vehicles/drivers", { companyId })
+      .then(setDrivers)
+      .catch(() => setDrivers([]));
+  }, [companyId, purpose, planDate]);
 
   useEffect(() => {
     if (purpose !== "new_order" || !companyId) {
@@ -289,6 +323,15 @@ function Field() {
       setError("Add at least one item from inventory");
       return;
     }
+    if (
+      mode === "order" &&
+      purpose === "new_order" &&
+      deliveryMode === "own_vehicle" &&
+      ((planVehicleId && !planDriverId) || (!planVehicleId && planDriverId))
+    ) {
+      setError("Pick both vehicle and driver, or leave both blank to assign later");
+      return;
+    }
     const quoteLines = pickedLines
       .filter((row) => row.item.product_id)
       .map((row) => ({
@@ -363,6 +406,13 @@ function Field() {
               customer_id: cid,
               notes: outcome.trim() || orderNote || null,
               lines: quoteLines,
+              delivery_mode: deliveryMode,
+              planned_vehicle_id:
+                deliveryMode === "own_vehicle" && planVehicleId ? Number(planVehicleId) : null,
+              planned_driver_user_id:
+                deliveryMode === "own_vehicle" && planDriverId ? Number(planDriverId) : null,
+              planned_slot: deliveryMode === "own_vehicle" && planSlot ? planSlot : null,
+              planned_on_date: deliveryMode === "own_vehicle" && planVehicleId ? planDate || null : null,
             }),
           });
           navigate({ to: "/sales" });
@@ -663,6 +713,127 @@ function Field() {
               )}
             </>
           )}
+
+          <div className="space-y-3 border-t border-border pt-3">
+            <div>
+              <p className="text-sm font-semibold">Delivery</p>
+              <p className="text-xs text-muted-foreground">
+                Manufacturer = Accounts invoices only. Own vehicle needs truck + driver before Accounts can invoice.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeliveryMode("own_vehicle");
+                }}
+                className={cn(
+                  "min-h-14 rounded-2xl border text-sm font-semibold",
+                  deliveryMode === "own_vehicle"
+                    ? "border-primary bg-primary/10 ring-2 ring-primary"
+                    : "border-border bg-background",
+                )}
+              >
+                Own vehicle
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeliveryMode("manufacturer");
+                  setPlanSlot("");
+                  setPlanVehicleId("");
+                  setPlanDriverId("");
+                }}
+                className={cn(
+                  "min-h-14 rounded-2xl border text-sm font-semibold",
+                  deliveryMode === "manufacturer"
+                    ? "border-primary bg-primary/10 ring-2 ring-primary"
+                    : "border-border bg-background",
+                )}
+              >
+                Manufacturer
+              </button>
+            </div>
+            {deliveryMode === "manufacturer" ? (
+              <p className="text-xs text-muted-foreground">
+                No fleet or driver. After Owner approves, Accounts raises the invoice — logistics is not involved.
+              </p>
+            ) : (
+              <div className="grid gap-2">
+                <p className="text-xs text-muted-foreground">
+                  Optional now — if skipped, assign later on Order desk. Invoice waits until vehicle + driver are set.
+                </p>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Date
+                  <input
+                    type="date"
+                    className={`${fieldInput} mt-1`}
+                    value={planDate}
+                    onChange={(e) => {
+                      setPlanDate(e.target.value);
+                      setPlanVehicleId("");
+                      setPlanDriverId("");
+                    }}
+                  />
+                </label>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Window
+                  <select
+                    className={`${fieldInput} mt-1`}
+                    value={planSlot}
+                    onChange={(e) => {
+                      setPlanSlot((e.target.value || "") as typeof planSlot);
+                      setPlanVehicleId("");
+                      setPlanDriverId("");
+                    }}
+                  >
+                    <option value="">Assign later</option>
+                    <option value="morning">Morning</option>
+                    <option value="afternoon">Afternoon</option>
+                    <option value="evening">Evening</option>
+                  </select>
+                </label>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Vehicle
+                  <select
+                    className={`${fieldInput} mt-1`}
+                    value={planVehicleId}
+                    disabled={!planSlot}
+                    onChange={(e) => {
+                      setPlanVehicleId(e.target.value ? Number(e.target.value) : "");
+                      setPlanDriverId("");
+                    }}
+                  >
+                    <option value="">{planSlot ? "Choose vehicle (or later)" : "Pick window first"}</option>
+                    {planSlot &&
+                      fleet.map((v) => (
+                        <option key={v.vehicle_id} value={v.vehicle_id}>
+                          {v.name} · {v.plate}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Driver
+                  <select
+                    className={`${fieldInput} mt-1`}
+                    value={planDriverId}
+                    disabled={!planVehicleId}
+                    onChange={(e) => setPlanDriverId(e.target.value ? Number(e.target.value) : "")}
+                  >
+                    <option value="">{planVehicleId ? "Choose driver (or later)" : "Pick vehicle first"}</option>
+                    {planVehicleId &&
+                      drivers.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.full_name}
+                          {d.phone ? ` · ${d.phone}` : ""}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              </div>
+            )}
+          </div>
         </section>
       )}
 

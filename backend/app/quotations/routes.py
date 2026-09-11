@@ -9,7 +9,7 @@ from app.core.deps import AuthContext, require_owner, require_perms
 from app.core.models import Customer, Lead, LeadStatus, Product, Quotation, QuotationLine, QuotationStatus
 from app.core.schemas import QuotationCreate, QuotationOut
 from app.sales.ensure_schema import ensure_sales_schema
-from app.sales.ops import open_confirmed_from_quotation
+from app.sales.ops import apply_delivery_plan, open_confirmed_from_quotation
 
 router = APIRouter(prefix="/quotations", tags=["quotations"])
 
@@ -36,6 +36,11 @@ def _out(q: Quotation, customer_name: str | None = None) -> QuotationOut:
         customer_name=customer_name,
         below_floor=below,
         needs_approval=q.status == QuotationStatus.PENDING_APPROVAL,
+        delivery_mode=getattr(q, "delivery_mode", None) or "own_vehicle",
+        planned_vehicle_id=getattr(q, "planned_vehicle_id", None),
+        planned_driver_user_id=getattr(q, "planned_driver_user_id", None),
+        planned_slot=getattr(q, "planned_slot", None),
+        planned_on_date=getattr(q, "planned_on_date", None),
     )
 
 
@@ -115,6 +120,14 @@ def create_quotation(
         notes=body.notes,
         created_by_id=auth.user.id,
         status=QuotationStatus.DRAFT,
+    )
+    apply_delivery_plan(
+        q,
+        delivery_mode=body.delivery_mode,
+        planned_vehicle_id=body.planned_vehicle_id,
+        planned_driver_user_id=body.planned_driver_user_id,
+        planned_slot=body.planned_slot,
+        planned_on_date=body.planned_on_date,
     )
     db.add(q)
     db.flush()

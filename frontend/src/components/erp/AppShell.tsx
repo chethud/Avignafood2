@@ -1,5 +1,5 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { useEffect, type ReactNode, useState } from "react";
+import { useEffect, type ReactNode, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Sparkles, Users, Handshake, MapPin, Boxes, Truck, ShoppingCart,
@@ -399,16 +399,30 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { items, canApprove } = usePendingApprovals();
   const { items: invoiceRequests, dismiss: dismissInvoice, canInvoice } = useInvoiceRequests();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const invoiceAutoPrompted = useRef(false);
 
   useEffect(() => {
     if (!getToken()) navigate({ to: "/login" });
     else if (!loading && !me) navigate({ to: "/login" });
   }, [navigate, loading, me]);
 
-  // Auto-open when Accounts has orders waiting to invoice
+  // One prompt only — never stack over /invoices form, never auto-chain the next SO
   useEffect(() => {
-    if (canInvoice && invoiceRequests.length > 0) setInvoiceOpen(true);
-  }, [canInvoice, invoiceRequests.length]);
+    if (!canInvoice) return;
+    if (pathname.startsWith("/invoices")) {
+      setInvoiceOpen(false);
+      return;
+    }
+    if (invoiceRequests.length === 0) {
+      invoiceAutoPrompted.current = false;
+      setInvoiceOpen(false);
+      return;
+    }
+    if (!invoiceAutoPrompted.current) {
+      invoiceAutoPrompted.current = true;
+      setInvoiceOpen(true);
+    }
+  }, [canInvoice, invoiceRequests.length, pathname]);
 
   const role = me?.user.role || "";
   const roleLabel = role.replaceAll("_", " ") || (loading ? "…" : "Signed in");
@@ -666,9 +680,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       </nav>
 
       <InvoiceRequestPopup
-        open={invoiceOpen && invoiceRequests.length > 0}
+        open={invoiceOpen && invoiceRequests.length > 0 && !pathname.startsWith("/invoices")}
         onClose={() => setInvoiceOpen(false)}
-        items={invoiceRequests}
+        items={invoiceRequests.slice(0, 1)}
+        waitingCount={invoiceRequests.length}
         onDismiss={dismissInvoice}
       />
     </div>

@@ -398,6 +398,12 @@ class Quotation(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Delivery plan captured at order/quote time (copied onto SalesOrder).
+    delivery_mode: Mapped[str | None] = mapped_column(String(40))  # own_vehicle | manufacturer
+    planned_vehicle_id: Mapped[int | None] = mapped_column(ForeignKey("vehicles.id"))
+    planned_driver_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    planned_slot: Mapped[str | None] = mapped_column(String(20))
+    planned_on_date: Mapped[date | None] = mapped_column(Date)
 
     lines: Mapped[list["QuotationLine"]] = relationship(back_populates="quotation", cascade="all, delete-orphan")
 
@@ -436,7 +442,12 @@ class SalesOrder(Base):
     # awaiting_invoice → Accounts raises invoice
     # ready | shortage | procuring → Sales (or Supervisor) stock / allot
     # allocated | dispatched → logistics
-    # allocated | dispatched → Logistics, then Accounts (payment)
+    # manufacturer → manufacturer delivers; no fleet/driver allotment
+    delivery_mode: Mapped[str | None] = mapped_column(String(40))  # own_vehicle | manufacturer | null=legacy
+    planned_vehicle_id: Mapped[int | None] = mapped_column(ForeignKey("vehicles.id"))
+    planned_driver_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    planned_slot: Mapped[str | None] = mapped_column(String(20))
+    planned_on_date: Mapped[date | None] = mapped_column(Date)
 
     lines: Mapped[list["SalesOrderLine"]] = relationship(back_populates="sales_order", cascade="all, delete-orphan")
 

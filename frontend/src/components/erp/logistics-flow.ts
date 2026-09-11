@@ -5,7 +5,10 @@ export const FAIL_REASONS = [
   "Vehicle issue",
   "Goods damaged",
   "Other",
-];
+] as const;
+
+/** Failures that need a photo of damage / vehicle problem. */
+export const FAIL_REASONS_NEED_PHOTO = ["Vehicle issue", "Goods damaged"] as const;
 
 export const SLOTS = [
   { key: "morning", label: "Morning" },

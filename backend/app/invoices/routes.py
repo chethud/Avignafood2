@@ -28,6 +28,7 @@ from app.core.schemas import (
     InvoiceFromOrderIn,
     InvoiceOut,
 )
+from app.sales.ops import can_raise_invoice, delivery_labels, normalize_delivery_mode
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -296,7 +297,11 @@ def billable_orders(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    """Sales orders Super Admin approved that Accounts can invoice. Invoice is raised before dispatch."""
+    """Approved sales orders Accounts can invoice.
+
+    Manufacturer delivery → invoice anytime after Owner approve.
+    Own vehicle → vehicle + driver must be assigned first (invoice needs vehicle details).
+    """
     company_id = auth.company_or_all()
     inv_q = db.query(Invoice.sales_order_id).filter(
         Invoice.organization_id == auth.organization_id,
@@ -323,6 +328,9 @@ def billable_orders(
     for so in rows:
         if so.id in invoiced:
             continue
+        ok, block = can_raise_invoice(so)
+        if not ok:
+            continue
         customer = db.query(Customer).filter(Customer.id == so.customer_id).first()
         qty = sum((ln.quantity for ln in so.lines), Decimal("0"))
         sub = Decimal("0")
@@ -337,6 +345,7 @@ def billable_orders(
         due = _customer_outstanding(db, so.company_id, so.customer_id)
         limit = (customer.credit_limit if customer else Decimal("0")) or Decimal("0")
         projected = due + est
+        vehicle, driver = delivery_labels(db, so)
         out.append(
             BillableOrderOut(
                 sales_order_id=so.id,
@@ -347,7 +356,9 @@ def billable_orders(
                 address=(customer.shipping_address or customer.address) if customer else None,
                 ops_status=so.ops_status,
                 logistics_status=None,
-                vehicle=None,
+                vehicle=vehicle,
+                driver_name=driver,
+                delivery_mode=normalize_delivery_mode(getattr(so, "delivery_mode", None)) or "own_vehicle",
                 line_count=len(so.lines),
                 qty=qty,
                 estimated_total=est,
@@ -355,9 +366,24 @@ def billable_orders(
                 current_outstanding=due,
                 projected_exposure=projected,
                 credit_ok=(limit <= 0) or (projected <= limit),
+                can_invoice=True,
+                invoice_block_reason=block,
             )
         )
     return out
+
+
+@router.get("/next-number")
+def next_invoice_number(
+    auth: AuthContext = Depends(require_perms("invoices.view")),
+    db: Session = Depends(get_db),
+):
+    """Preview the next auto invoice number for the active company."""
+    company_id = auth.require_company()
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return {"number": _next_number(db, company)}
 
 
 @router.post("/{invoice_id}/send", response_model=InvoiceOut)
@@ -740,6 +766,9 @@ def invoice_from_order(
     company_id = so.company_id
     if so.status != SalesOrderStatus.CONFIRMED:
         raise HTTPException(status_code=400, detail="Super Admin must approve the order before invoicing")
+    ok, block = can_raise_invoice(so)
+    if not ok:
+        raise HTTPException(status_code=400, detail=block or "Assign vehicle and driver before raising the invoice")
     existing = db.query(Invoice).filter(Invoice.sales_order_id == so.id).first()
     if existing:
         raise HTTPException(status_code=400, detail="Invoice already exists for this order")
@@ -832,8 +861,12 @@ def invoice_from_order(
     inv.tax_amount = tax_amount
     inv.total = subtotal + tax_amount
     so.status = SalesOrderStatus.INVOICED
-    # After Accounts raises invoice → Order desk for Supervisor or Sales to allot driver
-    if (so.ops_status or "") not in ("allocated", "dispatched"):
+    mode = normalize_delivery_mode(getattr(so, "delivery_mode", None))
+    vehicle, driver = delivery_labels(db, so)
+    if mode == "manufacturer":
+        # Manufacturer delivers — Accounts only raises invoice; no fleet allotment.
+        so.ops_status = "manufacturer"
+    elif (so.ops_status or "") not in ("allocated", "dispatched"):
         from app.sales.ops import line_stock
 
         stock_lines = line_stock(db, so.warehouse_id, so.lines)
@@ -841,12 +874,64 @@ def invoice_from_order(
             so.ops_status = "ready"
             for ln in so.lines:
                 ln.outstanding_qty = Decimal("0")
+            # Auto-book logistics run when Sales already planned vehicle + slot at order time.
+            if (
+                getattr(so, "planned_vehicle_id", None)
+                and getattr(so, "planned_driver_user_id", None)
+                and getattr(so, "planned_on_date", None)
+                and getattr(so, "planned_slot", None)
+            ):
+                from app.core.models import RoleName, User, Vehicle
+                from app.logistics.routes import assign_order_to_window
+
+                veh = (
+                    db.query(Vehicle)
+                    .filter(
+                        Vehicle.id == so.planned_vehicle_id,
+                        Vehicle.organization_id == auth.organization_id,
+                        Vehicle.is_active.is_(True),
+                    )
+                    .first()
+                )
+                driver_user = (
+                    db.query(User)
+                    .options(joinedload(User.role))
+                    .filter(
+                        User.id == so.planned_driver_user_id,
+                        User.organization_id == auth.organization_id,
+                        User.is_active.is_(True),
+                    )
+                    .first()
+                )
+                if veh and driver_user and driver_user.role.name == RoleName.LOGISTICS:
+                    try:
+                        assign_order_to_window(
+                            db,
+                            org_id=auth.organization_id,
+                            company_id=company_id,
+                            so=so,
+                            on_date=so.planned_on_date,
+                            slot=so.planned_slot,
+                            veh=veh,
+                            user_id=auth.user.id,
+                            driver_name=driver_user.full_name,
+                        )
+                    except HTTPException:
+                        # Keep planned fields; Order desk can allot manually.
+                        pass
         else:
-            # Still show on Order desk; Sales/Supervisor can confirm stock then allot
             so.ops_status = "pending_verify"
     remarks = (body.remarks or "").strip() if body else ""
-    if remarks:
-        so.notes = f"{(so.notes or '').strip()}\n[Invoice] {remarks}".strip()
+    delivery_note = ""
+    if mode == "manufacturer":
+        delivery_note = "Delivery: Manufacturer"
+    elif vehicle or driver:
+        delivery_note = " · ".join(
+            x for x in [f"Vehicle: {vehicle}" if vehicle else "", f"Driver: {driver}" if driver else ""] if x
+        )
+    bits = [x for x in [remarks, delivery_note] if x]
+    if bits:
+        so.notes = f"{(so.notes or '').strip()}\n[Invoice] {' · '.join(bits)}".strip()
     write_audit(
         db,
         action="create",
@@ -855,7 +940,7 @@ def invoice_from_order(
         organization_id=auth.organization_id,
         company_id=company_id,
         user_id=auth.user.id,
-        detail=f"{inv.number}" + (f" · {remarks}" if remarks else ""),
+        detail=f"{inv.number}" + (f" · {' · '.join(bits)}" if bits else ""),
     )
     db.commit()
     inv = db.query(Invoice).options(joinedload(Invoice.lines)).filter(Invoice.id == inv.id).first()

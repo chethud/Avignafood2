@@ -52,6 +52,9 @@ type Order = {
   logistics_status?: string | null;
   vehicle?: string | null;
   eta?: string | null;
+  delivery_mode?: string;
+  driver_name?: string | null;
+  can_invoice?: boolean;
 };
 
 type ProductOpt = { id: number; name: string; unit: string; base_price: string | number };
@@ -59,6 +62,17 @@ type ProductOpt = { id: number; name: string; unit: string; base_price: string |
 function orderStage(o: Order) {
   if (o.status === "cancelled") return "Declined";
   if (o.status === "draft" || o.ops_status === "pending_approval") return "Waiting Super Admin";
+  if (o.ops_status === "manufacturer") return "Manufacturer · invoiced";
+  if ((o.status === "confirmed" || o.ops_status === "awaiting_invoice") && o.delivery_mode === "manufacturer") {
+    return "Ready to invoice (manufacturer)";
+  }
+  if (
+    (o.status === "confirmed" || o.ops_status === "awaiting_invoice") &&
+    o.delivery_mode !== "manufacturer" &&
+    o.can_invoice === false
+  ) {
+    return "Assign vehicle + driver";
+  }
   if (o.status === "confirmed" || o.ops_status === "awaiting_invoice") return "Waiting invoice";
   if (o.ops_status === "pending_verify") return "Confirm stock";
   if (o.ops_status === "ready") return "Ready to allot";
@@ -188,6 +202,14 @@ function SalesWorkspace() {
               </Badge>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">Warehouse: {o.ops_status.replaceAll("_", " ")}</p>
+            {(o.delivery_mode || o.vehicle || o.driver_name) && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Delivery:{" "}
+                {o.delivery_mode === "manufacturer"
+                  ? "Manufacturer"
+                  : [o.vehicle || "Own vehicle", o.driver_name].filter(Boolean).join(" · ")}
+              </p>
+            )}
             {o.logistics_status && (
               <p className="mt-1 text-xs text-muted-foreground">
                 Dispatch: {o.logistics_status.replaceAll("_", " ")}

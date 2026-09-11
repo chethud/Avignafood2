@@ -106,15 +106,18 @@ export function InvoiceRequestPopup({
   open,
   onClose,
   items,
+  waitingCount,
   onDismiss,
 }: {
   open: boolean;
   onClose: () => void;
   items: InvoiceRequest[];
+  waitingCount?: number;
   onDismiss: (key: string) => void;
 }) {
   const navigate = useNavigate();
   const current = items[0];
+  const waiting = waitingCount ?? items.length;
 
   if (!open || !current) return null;
 
@@ -128,6 +131,11 @@ export function InvoiceRequestPopup({
     });
   }
 
+  function later() {
+    onDismiss(current.key);
+    onClose();
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
       <button className="absolute inset-0 bg-foreground/40 backdrop-blur-[2px]" aria-label="Close" onClick={onClose} />
@@ -139,21 +147,20 @@ export function InvoiceRequestPopup({
       >
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border sm:hidden" />
         <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">
-          Invoice request · {items.length} waiting
+          Invoice request{waiting > 1 ? ` · ${waiting} waiting` : ""}
         </p>
         <h2 id="invoice-request-title" className="mt-1 text-xl font-semibold tracking-tight">
           {current.customer}
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Company <span className="font-medium text-foreground">{current.companyName}</span>
-          {" · "}
-          Owner approved SO-{current.salesOrderId}. Raise the GST invoice first — then Supervisor or Sales can allot a driver.
+          Owner approved SO-{current.salesOrderId}. Raise the GST invoice first — then Supervisor or Sales can allot a
+          driver.
         </p>
 
         <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+          <div className="col-span-2 rounded-xl bg-secondary/60 px-3 py-3">
             <dt className="text-xs text-muted-foreground">Company</dt>
-            <dd className="mt-0.5 font-medium">{current.companyName}</dd>
+            <dd className="mt-1 text-xl font-semibold leading-snug tracking-tight sm:text-2xl">{current.companyName}</dd>
           </div>
           <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
             <dt className="text-xs text-muted-foreground">Order</dt>
@@ -169,7 +176,7 @@ export function InvoiceRequestPopup({
             <dt className="text-xs text-muted-foreground">Est. bill</dt>
             <dd className="mt-0.5 font-medium tabular-nums">{money(current.estimatedTotal)}</dd>
           </div>
-          <div className="rounded-xl bg-secondary/60 px-3 py-2.5 col-span-2">
+          <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
             <dt className="text-xs text-muted-foreground">Credit</dt>
             <dd className={`mt-0.5 font-medium ${current.creditOk ? "text-foreground" : "text-destructive"}`}>
               {current.creditOk ? "Within limit" : "Over limit"}
@@ -186,6 +193,11 @@ export function InvoiceRequestPopup({
             override if Owner allows.
           </p>
         )}
+        {waiting > 1 && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            {waiting - 1} more waiting — open from the bell when you are ready for the next one.
+          </p>
+        )}
 
         <div className="mt-5 grid grid-cols-2 gap-2">
           <button
@@ -197,10 +209,7 @@ export function InvoiceRequestPopup({
           </button>
           <button
             type="button"
-            onClick={() => {
-              onDismiss(current.key);
-              if (items.length <= 1) onClose();
-            }}
+            onClick={later}
             className="rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground"
           >
             Later

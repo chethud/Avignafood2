@@ -1,11 +1,12 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { api, mediaUrl } from "@/lib/api";
 import { money, waHref } from "@/lib/format";
 import { firms, firmLabelByCompanyId } from "@/lib/erp-data";
 import { useCompany } from "@/lib/company-context";
 import { dueCountdown, payStatus, payStatusLabel } from "@/lib/accounts";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
+import { buildInvoicePdfBlob, downloadPdfBlob } from "@/lib/invoice-pdf";
 
 export const Route = createFileRoute("/invoices")({
   head: () => ({
@@ -29,6 +30,9 @@ type BillableOrder = {
   address: string | null;
   ops_status: string;
   logistics_status: string | null;
+  vehicle?: string | null;
+  driver_name?: string | null;
+  delivery_mode?: string;
   line_count: number;
   qty: string | number;
   estimated_total: string | number;
@@ -36,6 +40,8 @@ type BillableOrder = {
   current_outstanding: string | number;
   projected_exposure: string | number;
   credit_ok: boolean;
+  can_invoice?: boolean;
+  invoice_block_reason?: string | null;
 };
 
 type InvoiceRow = {
@@ -102,6 +108,9 @@ function Invoices() {
   const [pickOrder, setPickOrder] = useState<BillableOrder | null>(null);
   const [draft, setDraft] = useState<InvoiceDraft | null>(null);
   const [printInv, setPrintInv] = useState<InvoiceRow | null>(null);
+  const [printIntent, setPrintIntent] = useState<"preview" | "download" | "whatsapp" | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");
@@ -174,24 +183,45 @@ function Invoices() {
       type So = {
         id: number;
         lines: { product_id: number; quantity: number; unit_price: number }[];
+        notes?: string | null;
+        delivery_mode?: string | null;
+        vehicle?: string | null;
+        driver_name?: string | null;
+        planned_slot?: string | null;
+        planned_on_date?: string | null;
       };
       type Prod = { id: number; name: string; gst_rate?: string | number };
-      const [sos, products] = await Promise.all([
+      type Cust = { id: number; credit_days?: number | null };
+      const [sos, products, nextNo, customers] = await Promise.all([
         api<So[]>("/api/v1/sales-orders", { companyId: o.company_id }),
         api<Prod[]>("/api/v1/products", { companyId: o.company_id }).catch(() => [] as Prod[]),
+        api<{ number: string }>("/api/v1/invoices/next-number", { companyId: o.company_id }).catch(() => ({
+          number: "",
+        })),
+        api<Cust[]>("/api/v1/customers", { companyId: o.company_id }).catch(() => [] as Cust[]),
       ]);
       const so = sos.find((x) => x.id === o.sales_order_id);
       const names = Object.fromEntries(products.map((p) => [p.id, p]));
+      const cust = customers.find((c) => c.id === o.customer_id);
       const today = new Date().toISOString().slice(0, 10);
-      const creditDays = 30;
+      const creditDays = cust?.credit_days && cust.credit_days > 0 ? cust.credit_days : 30;
       const due = new Date();
       due.setDate(due.getDate() + creditDays);
-      setPickOrder(o);
+      const deliveryMode = o.delivery_mode || so?.delivery_mode || null;
+      const vehicle = o.vehicle || so?.vehicle || null;
+      const driverName = o.driver_name || so?.driver_name || null;
+      const enriched: BillableOrder = {
+        ...o,
+        delivery_mode: deliveryMode || o.delivery_mode,
+        vehicle,
+        driver_name: driverName,
+      };
+      setPickOrder(enriched);
       setDraft({
         invoice_date: today,
         due_date: due.toISOString().slice(0, 10),
         credit_days: String(creditDays),
-        number: "",
+        number: nextNo.number || "",
         remarks: "",
         lines: (so?.lines || []).map((ln) => {
           const p = names[ln.product_id];
@@ -274,19 +304,351 @@ function Invoices() {
     }
   }
 
-  async function openPrint(row: InvoiceRow) {
+  async function loadInvoiceDetail(row: InvoiceRow) {
     try {
-      setPrintInv(
-        await api<InvoiceRow>(`/api/v1/invoices/${row.id}`, {
-          companyId: row.company_id,
-        }),
-      );
+      return await api<InvoiceRow>(`/api/v1/invoices/${row.id}`, {
+        companyId: row.company_id,
+      });
     } catch {
-      setPrintInv(row);
+      return row;
+    }
+  }
+
+  function closePdfViewer() {
+    setPrintInv(null);
+    setPrintIntent(null);
+    setPdfUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }
+
+  async function makePdf(detail: InvoiceRow) {
+    const firmMeta =
+      firms.find((f) => f.companyId === detail.company_id) ||
+      firms.find((f) => f.id === firm) ||
+      company;
+    let name = firmMeta?.name;
+    let gst = firmMeta?.gst ?? null;
+    let logoUrl: string | null = firmMeta && "logo" in firmMeta ? firmMeta.logo : null;
+    try {
+      type Co = {
+        id: number;
+        legal_name?: string;
+        trade_name?: string | null;
+        gstin?: string | null;
+        logo_url?: string | null;
+      };
+      const rows = await api<Co[]>("/api/v1/companies", { companyId: detail.company_id });
+      const co = rows.find((c) => c.id === detail.company_id) || rows[0];
+      if (co) {
+        name = co.trade_name || co.legal_name || name;
+        gst = co.gstin || gst;
+        if (co.logo_url) logoUrl = mediaUrl(co.logo_url) || co.logo_url;
+      }
+    } catch {
+      /* use firm seed logo */
+    }
+    return buildInvoicePdfBlob(detail, { name, gst, logoUrl });
+  }
+
+  async function previewInvoice(row: InvoiceRow) {
+    setError("");
+    setPdfBusy(true);
+    try {
+      const detail = await loadInvoiceDetail(row);
+      const blob = await makePdf(detail);
+      const url = URL.createObjectURL(blob);
+      setPdfUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+      setPrintIntent("preview");
+      setPrintInv(detail);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not build PDF");
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
+  async function downloadInvoicePdf(row: InvoiceRow) {
+    setError("");
+    setPdfBusy(true);
+    try {
+      const detail = await loadInvoiceDetail(row);
+      const blob = await makePdf(detail);
+      downloadPdfBlob(blob, `${detail.number || "invoice"}.pdf`);
+      const url = URL.createObjectURL(blob);
+      setPdfUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+      setPrintIntent("download");
+      setPrintInv(detail);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not download PDF");
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
+  function invoiceWhatsAppText(row: InvoiceRow) {
+    return [
+      `Tax Invoice ${row.number}`,
+      `Date: ${row.invoice_date}`,
+      `Amount: ${money(row.total)}`,
+      row.due_date ? `Due: ${row.due_date}` : null,
+      row.sales_order_id ? `SO-${row.sales_order_id}` : null,
+      "",
+      "Invoice PDF has been downloaded — please attach that file in this chat.",
+    ]
+      .filter((x) => x != null)
+      .join("\n");
+  }
+
+  async function shareInvoiceWhatsApp(row: InvoiceRow) {
+    setError("");
+    if (!row.phone) {
+      setError("No customer phone on this invoice — add phone on the customer to share on WhatsApp.");
+      return;
+    }
+    setPdfBusy(true);
+    try {
+      const detail = await loadInvoiceDetail(row);
+      const blob = await makePdf(detail);
+      downloadPdfBlob(blob, `${detail.number || "invoice"}.pdf`);
+      const url = URL.createObjectURL(blob);
+      setPdfUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+      setPrintIntent("whatsapp");
+      setPrintInv(detail);
+      void sendInvoice(row, "whatsapp");
+      window.open(
+        `${waHref(row.phone)}?text=${encodeURIComponent(invoiceWhatsAppText(detail))}`,
+        "_blank",
+        "noopener,noreferrer",
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not prepare WhatsApp share");
+    } finally {
+      setPdfBusy(false);
     }
   }
   const invoiced = rows.reduce((a, i) => a + Number(i.total || 0), 0);
   const open = rows.filter((i) => i.status === "open" || i.status === "partial").length;
+
+  if (pickOrder && draft) {
+    return (
+      <>
+        <PageHeader
+          title="Raise invoice"
+          subtitle={`SO-${pickOrder.sales_order_id} · ${pickOrder.customer_name}`}
+        />
+        <button
+          type="button"
+          className="mb-4 text-sm text-primary hover:underline"
+          onClick={() => {
+            setPickOrder(null);
+            setDraft(null);
+          }}
+        >
+          ← Back to invoices
+        </button>
+
+        <div className="mx-auto w-full max-w-3xl space-y-5 pb-8">
+          <div>
+            <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">Company</p>
+            <h2 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+              {pickOrder.company_name || firmLabelByCompanyId(pickOrder.company_id)}
+            </h2>
+          </div>
+
+          <dl className="grid gap-2 sm:grid-cols-2 text-sm">
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+              <dt className="text-xs text-muted-foreground">Customer</dt>
+              <dd className="mt-0.5 font-semibold leading-snug">{pickOrder.customer_name}</dd>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+              <dt className="text-xs text-muted-foreground">Order</dt>
+              <dd className="mt-0.5 font-medium">SO-{pickOrder.sales_order_id}</dd>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5 sm:col-span-2">
+              <dt className="text-xs text-muted-foreground">Delivery</dt>
+              <dd className="mt-0.5 font-medium leading-snug">
+                {pickOrder.delivery_mode === "manufacturer"
+                  ? "Manufacturer — no fleet"
+                  : [pickOrder.vehicle, pickOrder.driver_name].filter(Boolean).join(" · ") || "Own vehicle"}
+              </dd>
+            </div>
+            {pickOrder.address ? (
+              <div className="rounded-xl bg-secondary/60 px-3 py-2.5 sm:col-span-2">
+                <dt className="text-xs text-muted-foreground">Address</dt>
+                <dd className="mt-0.5 text-sm leading-snug">{pickOrder.address}</dd>
+              </div>
+            ) : null}
+            <div className="rounded-xl border border-primary/25 bg-primary/10 px-3 py-3 sm:col-span-2">
+              <dt className="text-xs text-muted-foreground">Invoice number (auto)</dt>
+              <dd className="mt-0.5 text-xl font-semibold tabular-nums tracking-tight">
+                {draft.number || "Will assign on raise"}
+              </dd>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+              <dt className="text-xs text-muted-foreground">Est. total</dt>
+              <dd className="mt-0.5 font-semibold tabular-nums">{money(draftEst || pickOrder.estimated_total)}</dd>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+              <dt className="text-xs text-muted-foreground">Credit</dt>
+              <dd className="mt-0.5">
+                <Badge tone={pickOrder.credit_ok ? "good" : "bad"}>
+                  {pickOrder.credit_ok ? "Within limit" : "Limit exceeded"}
+                </Badge>
+              </dd>
+            </div>
+          </dl>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="text-xs text-muted-foreground">
+              Invoice date
+              <input
+                type="date"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                value={draft.invoice_date}
+                onChange={(e) => setDraft({ ...draft, invoice_date: e.target.value })}
+              />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              Due date
+              <input
+                type="date"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                value={draft.due_date}
+                onChange={(e) => setDraft({ ...draft, due_date: e.target.value })}
+              />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              Credit days
+              <input
+                type="number"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                value={draft.credit_days}
+                onChange={(e) => {
+                  const days = e.target.value;
+                  const next = { ...draft, credit_days: days };
+                  const n = Number(days);
+                  if (Number.isFinite(n) && n >= 0 && draft.invoice_date) {
+                    const d = new Date(draft.invoice_date);
+                    d.setDate(d.getDate() + n);
+                    next.due_date = d.toISOString().slice(0, 10);
+                  }
+                  setDraft(next);
+                }}
+              />
+            </label>
+          </div>
+
+          <label className="block text-xs text-muted-foreground">
+            Remarks / notes
+            <textarea
+              className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+              rows={2}
+              value={draft.remarks}
+              onChange={(e) => setDraft({ ...draft, remarks: e.target.value })}
+              placeholder="Any Accounts notes for this bill"
+            />
+          </label>
+
+          <div className="space-y-3">
+            <div className="flex items-baseline justify-between gap-2">
+              <p className="text-sm font-medium">Lines</p>
+              <p className="text-xs text-muted-foreground">Qty and rate from the order — edit GST only</p>
+            </div>
+            {draft.lines.map((ln, idx) => {
+              const qty = Number(ln.quantity) || 0;
+              const price = Number(ln.unit_price) || 0;
+              const gst = Number(ln.gst_rate) || 0;
+              const lineSub = qty * price;
+              const lineTotal = lineSub + (lineSub * gst) / 100;
+              return (
+                <div key={ln.product_id} className="rounded-xl border border-border bg-card p-3 sm:p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-medium text-foreground">{ln.product_name}</p>
+                    <p className="shrink-0 text-sm font-semibold tabular-nums">{money(lineTotal)}</p>
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <div className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">Qty</span>
+                      <p className="min-h-11 rounded-lg border border-transparent bg-secondary/60 px-2 py-2 text-sm font-medium tabular-nums text-foreground">
+                        {ln.quantity}
+                      </p>
+                    </div>
+                    <div className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">Rate</span>
+                      <p className="min-h-11 rounded-lg border border-transparent bg-secondary/60 px-2 py-2 text-sm font-medium tabular-nums text-foreground">
+                        {ln.unit_price}
+                      </p>
+                    </div>
+                    <label className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">GST %</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        className="min-h-11 w-full rounded-lg border border-border bg-background px-2 py-2 text-sm font-medium text-foreground outline-none ring-offset-background focus:border-primary focus:ring-2 focus:ring-primary/30"
+                        value={ln.gst_rate}
+                        onChange={(e) => {
+                          const next = e.target.value.replace(/[^\d.]/g, "");
+                          const lines = draft.lines.map((row, i) =>
+                            i === idx ? { ...row, gst_rate: next } : row,
+                          );
+                          setDraft({ ...draft, lines });
+                        }}
+                        onFocus={(e) => e.currentTarget.select()}
+                      />
+                    </label>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-primary/10 px-4 py-3">
+            <span className="font-medium text-muted-foreground">Total incl. GST</span>
+            <span className="text-xl font-semibold tabular-nums">{money(draftEst)}</span>
+          </div>
+          {!pickOrder.credit_ok && (
+            <p className="text-xs text-destructive">
+              Projected {money(pickOrder.projected_exposure)} vs limit {money(pickOrder.credit_limit)}.
+            </p>
+          )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <div className="sticky bottom-0 flex gap-2 border-t border-border bg-background/95 py-3 backdrop-blur sm:static sm:border-0 sm:bg-transparent sm:py-0 sm:backdrop-blur-none">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void generateFromOrder(!pickOrder.credit_ok)}
+              className="flex-1 rounded-xl bg-primary py-3 text-sm font-medium text-primary-foreground disabled:opacity-60"
+            >
+              {busy ? "Creating…" : pickOrder.credit_ok ? "Raise invoice" : "Raise anyway"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPickOrder(null);
+                setDraft(null);
+              }}
+              className="rounded-xl border border-border px-5 py-3 text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -294,7 +656,7 @@ function Invoices() {
         title="Invoices"
         subtitle="After Owner approves a sales order, it lands here first. Raise the invoice — then Supervisor or Sales allot the driver for Logistics."
       />
-      {error && !pickOrder && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
+      {error && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Kpi label="Ready to invoice" value={String(orders.length)} tone={orders.length ? "warn" : "good"} meta="Owner-approved · your queue" />
@@ -307,7 +669,7 @@ function Invoices() {
         hint={
           readyFiltersActive
             ? `Showing ${readyVisible.length} of ${orders.length}`
-            : "Owner approved — raise GST invoice first. Driver allotment happens after this on Order desk."
+            : "Owner approved · manufacturer ready anytime · own vehicle only after truck + driver assigned"
         }
         className="mt-6"
       >
@@ -340,15 +702,23 @@ function Invoices() {
             Clear filters
           </button>
         )}
-        <Table head={["Company", "Order", "Customer", "Lines", "Est. total", "Stage", "Credit", ""]}>
+        <Table head={["Company", "Order", "Customer", "Delivery", "Est. total", "Credit", ""]}>
           {readyVisible.map((o) => (
             <tr key={o.sales_order_id}>
               <Td className="text-muted-foreground">{o.company_name || firmLabelByCompanyId(o.company_id)}</Td>
               <Td className="font-medium">SO-{o.sales_order_id}</Td>
               <Td>{o.customer_name}</Td>
-              <Td className="tabular-nums">{o.line_count}</Td>
+              <Td className="text-sm">
+                {o.delivery_mode === "manufacturer" ? (
+                  <span className="text-muted-foreground">Manufacturer</span>
+                ) : (
+                  <span>
+                    {o.vehicle || "Own vehicle"}
+                    {o.driver_name ? ` · ${o.driver_name}` : ""}
+                  </span>
+                )}
+              </Td>
               <Td className="tabular-nums">{money(o.estimated_total)}</Td>
-              <Td className="capitalize">{(o.logistics_status || o.ops_status).replaceAll("_", " ")}</Td>
               <Td>
                 <Badge tone={o.credit_ok ? "good" : "bad"}>{o.credit_ok ? "Within limit" : "Limit exceeded"}</Badge>
               </Td>
@@ -364,7 +734,7 @@ function Invoices() {
           <p className="mt-3 text-sm text-muted-foreground">
             {orders.length
               ? "No orders match this view."
-              : "No approved orders waiting to bill. Super Admin must approve a sales order first."}
+              : "Nothing ready to bill. Manufacturer orders appear after Owner approve. Own-vehicle orders need vehicle + driver first (Sales / Order desk)."}
           </p>
         )}
       </Panel>
@@ -417,32 +787,27 @@ function Invoices() {
               </Td>
               <Td>
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" className="text-sm text-primary hover:underline" onClick={() => void openPrint(i)}>
-                    PDF
+                  <button
+                    type="button"
+                    className="text-sm text-primary hover:underline"
+                    onClick={() => void previewInvoice(i)}
+                  >
+                    Preview
                   </button>
-                  {i.phone ? (
-                    <a
-                      href={`${waHref(i.phone)}?text=${encodeURIComponent(`Invoice ${i.number} dated ${i.invoice_date}. Amount ${money(i.total)}. Due ${i.due_date || ""}.`)}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-sm text-primary hover:underline"
-                      onClick={() => void sendInvoice(i, "whatsapp")}
-                    >
-                      WhatsApp
-                    </a>
-                  ) : (
-                    <button type="button" className="text-sm text-primary hover:underline" onClick={() => void sendInvoice(i, "whatsapp")}>
-                      Send
-                    </button>
-                  )}
-                  <button type="button" className="text-sm text-primary hover:underline" onClick={() => void sendInvoice(i, "email")}>
-                    Email
+                  <button
+                    type="button"
+                    className="text-sm text-primary hover:underline"
+                    onClick={() => void downloadInvoicePdf(i)}
+                  >
+                    Download PDF
                   </button>
-                  {Number(i.outstanding) > 0 && i.status !== "cancelled" && (
-                    <Link to="/payments" className="text-sm text-primary hover:underline">
-                      Payment
-                    </Link>
-                  )}
+                  <button
+                    type="button"
+                    className="text-sm text-primary hover:underline"
+                    onClick={() => void shareInvoiceWhatsApp(i)}
+                  >
+                    WhatsApp
+                  </button>
                 </div>
               </Td>
             </tr>
@@ -452,215 +817,68 @@ function Invoices() {
         {!visible.length && <p className="mt-3 text-sm text-muted-foreground">No invoices match these filters.</p>}
       </Panel>
 
-      {pickOrder && draft && (
+      {printInv && pdfUrl && (
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-foreground/40"
-            aria-label="Close"
-            onClick={() => {
-              setPickOrder(null);
-              setDraft(null);
-            }}
-          />
-          <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-lg sm:rounded-2xl">
-            <h2 className="text-lg font-semibold">Enter invoice details</h2>
-            <p className="mt-2 text-xl font-semibold tracking-tight text-foreground">
-              {pickOrder.company_name || firmLabelByCompanyId(pickOrder.company_id)}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              SO-{pickOrder.sales_order_id} · {pickOrder.customer_name} — fill dates, lines and remarks, then raise.
-            </p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="text-xs text-muted-foreground">
-                Invoice date
-                <input
-                  type="date"
-                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
-                  value={draft.invoice_date}
-                  onChange={(e) => setDraft({ ...draft, invoice_date: e.target.value })}
-                />
-              </label>
-              <label className="text-xs text-muted-foreground">
-                Due date
-                <input
-                  type="date"
-                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
-                  value={draft.due_date}
-                  onChange={(e) => setDraft({ ...draft, due_date: e.target.value })}
-                />
-              </label>
-              <label className="text-xs text-muted-foreground">
-                Credit days
-                <input
-                  type="number"
-                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
-                  value={draft.credit_days}
-                  onChange={(e) => setDraft({ ...draft, credit_days: e.target.value })}
-                />
-              </label>
-              <label className="text-xs text-muted-foreground">
-                Invoice number (optional)
-                <input
-                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
-                  placeholder="Auto if blank"
-                  value={draft.number}
-                  onChange={(e) => setDraft({ ...draft, number: e.target.value })}
-                />
-              </label>
-            </div>
-            <label className="mt-3 block text-xs text-muted-foreground">
-              Remarks / notes
-              <textarea
-                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
-                rows={2}
-                value={draft.remarks}
-                onChange={(e) => setDraft({ ...draft, remarks: e.target.value })}
-                placeholder="Any Accounts notes for this bill"
-              />
-            </label>
-            <div className="mt-4 space-y-3">
-              <div className="flex items-baseline justify-between gap-2">
-                <p className="text-sm font-medium">Lines</p>
-                <p className="text-xs text-muted-foreground">Qty and rate from the order — edit GST only</p>
-              </div>
-              {draft.lines.map((ln, idx) => (
-                <div key={ln.product_id} className="rounded-xl border border-border p-3">
-                  <p className="text-sm font-medium text-foreground">{ln.product_name}</p>
-                  <div className="mt-2 grid grid-cols-3 gap-2">
-                    <div className="block text-xs text-muted-foreground">
-                      <span className="mb-1 block">Qty</span>
-                      <p className="min-h-11 rounded-lg border border-transparent bg-secondary/60 px-2 py-2 text-sm font-medium tabular-nums text-foreground">
-                        {ln.quantity}
-                      </p>
-                    </div>
-                    <div className="block text-xs text-muted-foreground">
-                      <span className="mb-1 block">Rate</span>
-                      <p className="min-h-11 rounded-lg border border-transparent bg-secondary/60 px-2 py-2 text-sm font-medium tabular-nums text-foreground">
-                        {ln.unit_price}
-                      </p>
-                    </div>
-                    <label className="block text-xs text-muted-foreground">
-                      <span className="mb-1 block">GST %</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        autoComplete="off"
-                        className="min-h-11 w-full rounded-lg border border-border bg-background px-2 py-2 text-sm font-medium text-foreground outline-none ring-offset-background focus:border-primary focus:ring-2 focus:ring-primary/30"
-                        value={ln.gst_rate}
-                        onChange={(e) => {
-                          const next = e.target.value.replace(/[^\d.]/g, "");
-                          const lines = draft.lines.map((row, i) =>
-                            i === idx ? { ...row, gst_rate: next } : row,
-                          );
-                          setDraft({ ...draft, lines });
-                        }}
-                        onFocus={(e) => e.currentTarget.select()}
-                      />
-                    </label>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <dl className="mt-4 space-y-1 text-sm">
-              <div className="flex justify-between gap-3">
-                <dt className="text-muted-foreground">Est. total incl. GST</dt>
-                <dd className="tabular-nums font-medium">{money(draftEst)}</dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-muted-foreground">Credit</dt>
-                <dd>
-                  <Badge tone={pickOrder.credit_ok ? "good" : "bad"}>
-                    {pickOrder.credit_ok ? "Within limit" : "Limit exceeded"}
-                  </Badge>
-                </dd>
-              </div>
-            </dl>
-            {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-            <div className="mt-5 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void generateFromOrder(!pickOrder.credit_ok)}
-                className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
-              >
-                {busy ? "Creating…" : pickOrder.credit_ok ? "Raise invoice" : "Raise anyway"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPickOrder(null);
-                  setDraft(null);
-                }}
-                className="rounded-lg border border-border py-2.5 text-sm"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {printInv && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4 print:static print:inset-auto print:p-0">
-          <button type="button" className="absolute inset-0 bg-foreground/40 print:hidden" aria-label="Close" onClick={() => setPrintInv(null)} />
-          <div id="invoice-print" className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-lg sm:rounded-2xl print:max-h-none print:max-w-none print:overflow-visible print:rounded-none print:border-0 print:p-8">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">{company?.name || "Avighna Foods"}</p>
-            <h2 className="text-lg font-semibold">Tax Invoice {printInv.number}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              GSTIN {company?.gst || "—"} · Invoice {printInv.invoice_date} · Due {printInv.due_date || "—"}
-              {printInv.sales_order_id ? ` · SO-${printInv.sales_order_id}` : ""}
-            </p>
-            <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
+          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={closePdfViewer} />
+          <div className="relative z-10 flex h-[92dvh] w-full max-w-4xl flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-[var(--shadow-soft)] sm:rounded-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
               <div>
-                <dt className="text-muted-foreground">Bill to</dt>
-                <dd className="font-medium">{printInv.customer_name}</dd>
-                <dd>{printInv.gstin || ""}</dd>
-                <dd className="text-muted-foreground">{printInv.billing_address || printInv.address || ""}</dd>
+                <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">
+                  {printIntent === "download"
+                    ? "Download PDF"
+                    : printIntent === "whatsapp"
+                      ? "WhatsApp · PDF ready"
+                      : "PDF preview"}
+                </p>
+                <p className="text-sm font-semibold">
+                  {printInv.number} · {printInv.customer_name || "Invoice"}
+                </p>
               </div>
-              <div>
-                <dt className="text-muted-foreground">Ship to</dt>
-                <dd>{printInv.shipping_address || printInv.address || "—"}</dd>
-                <dd className="text-muted-foreground">{printInv.credit_days ?? 30} day credit</dd>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={pdfBusy}
+                  className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+                  onClick={() => {
+                    if (!printInv) return;
+                    void makePdf(printInv).then((blob) =>
+                      downloadPdfBlob(blob, `${printInv.number || "invoice"}.pdf`),
+                    );
+                  }}
+                >
+                  Download PDF
+                </button>
+                {printInv.phone ? (
+                  <button
+                    type="button"
+                    className="rounded-lg border border-border px-3 py-2 text-sm"
+                    onClick={() => {
+                      void makePdf(printInv).then((blob) => {
+                        downloadPdfBlob(blob, `${printInv.number || "invoice"}.pdf`);
+                        void sendInvoice(printInv, "whatsapp");
+                        window.open(
+                          `${waHref(printInv.phone!)}?text=${encodeURIComponent(invoiceWhatsAppText(printInv))}`,
+                          "_blank",
+                          "noopener,noreferrer",
+                        );
+                      });
+                    }}
+                  >
+                    WhatsApp
+                  </button>
+                ) : null}
+                <button type="button" onClick={closePdfViewer} className="rounded-lg border border-border px-3 py-2 text-sm">
+                  Close
+                </button>
               </div>
-            </dl>
-            <table className="mt-4 w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-muted-foreground">
-                  <th className="py-1">Product</th>
-                  <th className="py-1 text-right">Qty</th>
-                  <th className="py-1 text-right">Rate</th>
-                  <th className="py-1 text-right">GST</th>
-                  <th className="py-1 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(printInv.lines || []).map((ln, idx) => (
-                  <tr key={idx} className="border-b border-border/60">
-                    <td className="py-1">{ln.product_name || "Item"}</td>
-                    <td className="py-1 text-right tabular-nums">{ln.quantity}</td>
-                    <td className="py-1 text-right tabular-nums">{money(ln.unit_price)}</td>
-                    <td className="py-1 text-right tabular-nums">{ln.gst_rate}%</td>
-                    <td className="py-1 text-right tabular-nums">{money(ln.line_total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <dl className="mt-4 ml-auto w-56 space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">Taxable</dt><dd className="tabular-nums">{money(printInv.subtotal || 0)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">CGST</dt><dd className="tabular-nums">{money(printInv.cgst || 0)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">SGST</dt><dd className="tabular-nums">{money(printInv.sgst || 0)}</dd></div>
-              <div className="flex justify-between font-medium"><dt>Grand total</dt><dd className="tabular-nums">{money(printInv.total)}</dd></div>
-            </dl>
-            <p className="mt-4 text-xs text-muted-foreground">Pay by bank transfer / UPI / cheque. Outstanding {money(printInv.outstanding)}.</p>
-            <div className="mt-5 grid grid-cols-2 gap-2 print:hidden">
-              <button type="button" onClick={() => window.print()} className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground">
-                Print / PDF
-              </button>
-              <button type="button" onClick={() => setPrintInv(null)} className="rounded-lg border border-border py-2.5 text-sm">
-                Close
-              </button>
             </div>
+            {printIntent === "whatsapp" && (
+              <p className="border-b border-border bg-secondary/40 px-4 py-2 text-xs text-muted-foreground">
+                PDF downloaded. Attach <span className="font-medium text-foreground">{printInv.number}.pdf</span> in the
+                WhatsApp chat that opened.
+              </p>
+            )}
+            <iframe title={`Invoice ${printInv.number}`} src={pdfUrl} className="min-h-0 w-full flex-1 bg-secondary/30" />
           </div>
         </div>
       )}

@@ -13,7 +13,7 @@ export const Route = createFileRoute("/ops")({
       { title: "Order desk · Avighna ERP" },
       {
         name: "description",
-        content: "After Accounts invoices, Sales or Supervisor pick vehicle then logistics driver for shipment.",
+        content: "Sales can plan vehicle at order time. Manufacturer skips fleet. Own vehicle + driver must be set before Accounts invoices.",
       },
     ],
   }),
@@ -51,6 +51,13 @@ type DeskOrder = {
   slot_date: string | null;
   slot: string | null;
   vehicle: string | null;
+  delivery_mode?: string;
+  planned_vehicle_id?: number | null;
+  planned_driver_user_id?: number | null;
+  planned_slot?: string | null;
+  planned_on_date?: string | null;
+  driver_name?: string | null;
+  can_invoice?: boolean;
 };
 
 type DriverOpt = { id: number; full_name: string; phone: string | null; email: string };
@@ -71,9 +78,9 @@ const FILTERS: { id: Filter; label: string }[] = [
 ];
 
 function opsTone(status: string): "neutral" | "good" | "warn" | "bad" {
-  if (status === "ready" || status === "allocated" || status === "dispatched") return "good";
+  if (status === "ready" || status === "allocated" || status === "dispatched" || status === "manufacturer") return "good";
   if (status === "shortage") return "bad";
-  if (status === "procuring" || status === "pending_verify") return "warn";
+  if (status === "procuring" || status === "pending_verify" || status === "awaiting_invoice") return "warn";
   return "neutral";
 }
 
@@ -88,6 +95,7 @@ function opsLabel(status: string) {
       ready: "Ready — book truck",
       allocated: "Truck booked",
       dispatched: "Going",
+      manufacturer: "Manufacturer delivery",
     }[status] || status
   );
 }
@@ -170,7 +178,9 @@ function OrderDesk() {
   const visible = useMemo(() => {
     if (filter === "all") {
       return rows.filter((r) =>
-        ["ready", "shortage", "procuring", "allocated", "pending_verify"].includes(r.ops_status),
+        ["ready", "shortage", "procuring", "allocated", "pending_verify", "awaiting_invoice", "manufacturer"].includes(
+          r.ops_status,
+        ),
       );
     }
     if (filter === "allocated") return rows.filter((r) => r.ops_status === "allocated" || r.ops_status === "dispatched");
@@ -201,12 +211,12 @@ function OrderDesk() {
     <>
       <PageHeader
         title="Order desk"
-        subtitle="After Accounts invoices: pick date + window, then vehicle, then logistics driver. Owner adds trucks and logistics logins in Administration."
+        subtitle="Plan vehicle at order time or here. Manufacturer skips fleet. Own vehicle + driver required before Accounts invoices; book the run when stock is ready."
       />
       {!canAllot && (
         <Panel className="mb-4">
           <p className="text-sm text-muted-foreground">
-            Driver allotment is for Sales or Supervisor after Accounts raises the invoice. Logistics only drives what you assign.
+            Vehicle / driver planning is for Sales or Supervisor. Logistics only drives allotted own-vehicle runs.
           </p>
         </Panel>
       )}
@@ -218,7 +228,9 @@ function OrderDesk() {
           const n =
             f.id === "all"
               ? rows.filter((r) =>
-                  ["ready", "shortage", "procuring", "allocated", "pending_verify"].includes(r.ops_status),
+                  ["ready", "shortage", "procuring", "allocated", "pending_verify", "awaiting_invoice", "manufacturer"].includes(
+                    r.ops_status,
+                  ),
                 ).length
               : counts[f.id] || 0;
           return (
@@ -242,7 +254,7 @@ function OrderDesk() {
       {canAllot && !visible.length && (
         <Panel>
           <p className="text-sm text-muted-foreground">
-            No orders ready to book. Flow: Sales creates → Owner approves → Accounts raises invoice → then Supervisor or Sales assign date + window + vehicle + driver → Logistics drives.
+            No orders on the desk. Flow: Sales creates (pick manufacturer or own vehicle) → Owner approves → assign truck/driver if own vehicle → Accounts invoices → book run when stock ready → Logistics.
           </p>
           <Link to="/sales" className="mt-3 inline-block text-sm font-medium text-primary">
             Go to Sales orders →
@@ -269,6 +281,16 @@ function OrderDesk() {
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Badge tone="neutral">{so.company_name || firmLabelByCompanyId(so.company_id)}</Badge>
                 <Badge tone={opsTone(so.ops_status)}>{opsLabel(so.ops_status)}</Badge>
+                {so.delivery_mode === "manufacturer" ? (
+                  <Badge tone="good">Manufacturer</Badge>
+                ) : so.vehicle || so.planned_vehicle_id ? (
+                  <Badge tone="good">
+                    {so.vehicle || "Vehicle planned"}
+                    {so.driver_name ? ` · ${so.driver_name}` : ""}
+                  </Badge>
+                ) : so.ops_status === "awaiting_invoice" ? (
+                  <Badge tone="warn">Needs vehicle + driver for invoice</Badge>
+                ) : null}
                 {so.dispatch_id && (
                   <Badge tone="good">
                     {so.slot_date || ""} {so.slot || ""} {so.vehicle ? `· ${so.vehicle}` : ""}
@@ -411,7 +433,125 @@ function OrderDesk() {
                 </div>
               )}
 
-              {canBook && so.ops_status === "ready" && (
+              {so.delivery_mode === "manufacturer" && (
+                <p className="mt-4 text-sm text-muted-foreground">
+                  Manufacturer delivery — no truck or driver. Accounts can raise the invoice after Owner approval.
+                </p>
+              )}
+
+              {so.delivery_mode !== "manufacturer" &&
+                so.ops_status === "awaiting_invoice" &&
+                !so.can_invoice && (
+                <div className="mt-4 space-y-3 rounded-xl border border-warning/40 bg-warning/5 p-3">
+                  <p className="text-sm font-medium">Assign vehicle + driver (required before invoice)</p>
+                  <p className="text-xs text-muted-foreground">
+                    Accounts needs vehicle details on the invoice. You can book the logistics run later when stock is ready.
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="text-xs text-muted-foreground">
+                      Date
+                      <input
+                        type="date"
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={draft.date}
+                        onChange={(e) => {
+                          const date = e.target.value;
+                          patchDraft(so.id, { date, vehicleId: "", driverUserId: "" });
+                          if (date) void loadFleet(date);
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      Window
+                      <select
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={draft.slot}
+                        onChange={(e) =>
+                          patchDraft(so.id, {
+                            slot: (e.target.value || "") as SlotKey | "",
+                            vehicleId: "",
+                            driverUserId: "",
+                          })
+                        }
+                      >
+                        <option value="">Choose window</option>
+                        {SLOTS.map((s) => (
+                          <option key={s.key} value={s.key}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      Vehicle
+                      <select
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={draft.vehicleId}
+                        disabled={!draft.date || !draft.slot}
+                        onChange={(e) =>
+                          patchDraft(so.id, {
+                            vehicleId: e.target.value ? Number(e.target.value) : "",
+                            driverUserId: "",
+                          })
+                        }
+                      >
+                        <option value="">Choose vehicle</option>
+                        {draft.date &&
+                          draft.slot &&
+                          fleet.map((v) => (
+                            <option key={v.vehicle_id} value={v.vehicle_id}>
+                              {v.name} · {v.plate}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      Driver
+                      <select
+                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={draft.driverUserId}
+                        disabled={!draft.vehicleId}
+                        onChange={(e) =>
+                          patchDraft(so.id, { driverUserId: e.target.value ? Number(e.target.value) : "" })
+                        }
+                      >
+                        <option value="">Choose driver</option>
+                        {draft.vehicleId &&
+                          drivers.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.full_name}
+                              {d.phone ? ` · ${d.phone}` : ""}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy === `p-${so.id}` || !allotComplete}
+                    onClick={() =>
+                      run(`p-${so.id}`, () =>
+                        api(`/api/v1/sales-orders/${so.id}/plan-delivery`, {
+                          method: "POST",
+                          companyId: so.company_id,
+                          body: JSON.stringify({
+                            delivery_mode: "own_vehicle",
+                            on_date: draft.date,
+                            slot: draft.slot,
+                            vehicle_id: draft.vehicleId,
+                            driver_user_id: draft.driverUserId,
+                          }),
+                        }).then(() => undefined),
+                      )
+                    }
+                    className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+                  >
+                    {busy === `p-${so.id}` ? "Saving…" : "Save vehicle + driver for invoice"}
+                  </button>
+                </div>
+              )}
+
+              {canBook && so.ops_status === "ready" && so.delivery_mode !== "manufacturer" && (
                 <div className="mt-4 space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
                   <p className="text-sm font-medium">Book truck for this order</p>
                   <p className="text-xs text-muted-foreground">
