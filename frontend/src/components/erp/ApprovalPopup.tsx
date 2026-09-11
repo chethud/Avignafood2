@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
 import { useMe } from "@/lib/me-context";
-import { approvals, byFirm, firmLabelByCompanyId, inr } from "@/lib/erp-data";
+import { firmLabelByCompanyId, inr } from "@/lib/erp-data";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -36,26 +36,6 @@ export type PendingItem = {
   salesperson: string;
   lines?: ApprovalLine[];
   notes?: string | null;
-};
-
-type Quote = {
-  id: number;
-  company_id: number;
-  customer_id: number;
-  status: string;
-  notes: string | null;
-  lines: { product_id: number; quantity: number; unit_price: number; base_price: number }[];
-};
-
-type Purchase = {
-  id: number;
-  company_id: number;
-  customer_id: number;
-  product: string;
-  quantity: string | number;
-  status: string;
-  sales_order_id?: number | null;
-  manufacturer?: string | null;
 };
 
 type OrderLine = {
@@ -128,46 +108,11 @@ export function usePendingApprovals() {
     setLoading(true);
     const dismissed = new Set(JSON.parse(sessionStorage.getItem("approvalDismissed") || "[]") as string[]);
     try {
-      const [quotes, purchases, orders, customers] = await Promise.all([
-        api<Quote[]>("/api/v1/quotations").catch(() => [] as Quote[]),
-        api<Purchase[]>("/api/v1/purchases").catch(() => [] as Purchase[]),
+      const [orders, customers] = await Promise.all([
         api<Order[]>("/api/v1/sales-orders").catch(() => [] as Order[]),
         api<Customer[]>("/api/v1/customers").catch(() => [] as Customer[]),
       ]);
       const names = Object.fromEntries(customers.map((c) => [c.id, c.name]));
-      const quoteItems: PendingItem[] = quotes
-        .filter((q) => q.status === "pending_approval")
-        .map((q) => {
-          const line = q.lines[0];
-          return {
-            key: `q-${q.id}`,
-            source: "api" as const,
-            kind: "quote" as const,
-            quoteId: q.id,
-            companyId: q.company_id,
-            customer: names[q.customer_id] || `Customer #${q.customer_id}`,
-            product: line ? `Product #${line.product_id}` : "Quotation",
-            qty: line ? `${line.quantity}` : "—",
-            asked: line ? Number(line.unit_price) : 0,
-            floor: line ? Number(line.base_price) : 0,
-            salesperson: "Sales",
-          };
-        });
-      const purchaseItems: PendingItem[] = purchases
-        .filter((p) => p.status === "pending_approval")
-        .map((p) => ({
-          key: `p-${p.id}`,
-          source: "api" as const,
-          kind: "purchase" as const,
-          purchaseId: p.id,
-          companyId: p.company_id,
-          customer: names[p.customer_id] || `Customer #${p.customer_id}`,
-          product: p.product || "Purchase requirement",
-          qty: String(p.quantity ?? "—"),
-          asked: 0,
-          floor: 0,
-          salesperson: p.sales_order_id ? `SO-${p.sales_order_id}` : p.manufacturer || "Supervisor",
-        }));
       const orderItems: PendingItem[] = orders
         .filter((o) => o.status === "draft" && (o.ops_status === "pending_approval" || !o.ops_status))
         .map((o) => {
@@ -190,24 +135,9 @@ export function usePendingApprovals() {
             notes: o.notes,
           };
         });
-      const fromApi: PendingItem[] = [...orderItems, ...quoteItems, ...purchaseItems];
 
-      // Demo fallback so popup still shows with seed mock data
-      const fromMock: PendingItem[] = byFirm(approvals, firm)
-        .filter((a) => a.status === "Pending")
-        .map((a) => ({
-          key: `m-${a.id}`,
-          source: "mock" as const,
-          customer: a.customer,
-          product: a.product,
-          qty: a.qty,
-          asked: a.askedPrice,
-          floor: a.floorPrice,
-          salesperson: a.salesperson,
-        }));
-
-      const merged = (fromApi.length ? fromApi : fromMock).filter((i) => !dismissed.has(i.key));
-      setItems(merged);
+      // Order requests only — price (below floor) is reviewed inside each order, not as a separate queue
+      setItems(orderItems.filter((i) => !dismissed.has(i.key)));
     } finally {
       setLoading(false);
     }
@@ -345,10 +275,6 @@ export function ApprovalPopup({
     try {
       if (current.source === "api" && current.orderId) {
         await api(`/api/v1/sales-orders/${current.orderId}/${action}`, opts);
-      } else if (current.source === "api" && current.purchaseId) {
-        await api(`/api/v1/purchases/${current.purchaseId}/${action}`, opts);
-      } else if (current.source === "api" && current.quoteId) {
-        await api(`/api/v1/quotations/${current.quoteId}/${action}`, opts);
       }
       onDecided(current.key, action);
       if (items.length <= 1) onClose();
@@ -359,7 +285,7 @@ export function ApprovalPopup({
     }
   }
 
-  const wide = current.kind === "order";
+  const belowFloor = (current.lines || []).some((ln) => ln.below_wholesale);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
@@ -368,79 +294,20 @@ export function ApprovalPopup({
         role="dialog"
         aria-modal="true"
         aria-labelledby="approval-title"
-        className={cn(
-          "relative z-10 w-full max-h-[88dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 shadow-[var(--shadow-soft)] sm:rounded-2xl",
-          wide ? "sm:max-w-lg" : "sm:max-w-md",
-        )}
+        className="relative z-10 w-full max-h-[88dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 shadow-[var(--shadow-soft)] sm:max-w-lg sm:rounded-2xl"
       >
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border sm:hidden" />
         <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">
-          {current.kind === "order"
-            ? "Sales order request"
-            : current.kind === "purchase"
-              ? "Purchase requirement"
-              : "Price approval"}{" "}
-          · {items.length} waiting
+          Sales order request · {items.length} waiting
         </p>
         <h2 id="approval-title" className="mt-1 text-xl font-semibold tracking-tight">
-          {current.kind === "order" ? `Order for ${current.customer}` : current.customer}
+          Order for {current.customer}
         </h2>
-        {current.kind !== "order" && (
-          <p className="mt-1 text-sm text-muted-foreground">
-            {current.kind === "purchase"
-              ? `${current.salesperson} · manufacturer stock`
-              : `${current.salesperson} · below floor rate`}
-          </p>
+        {belowFloor && (
+          <p className="mt-1 text-sm text-warning">Includes below-floor price — review rates on the lines below</p>
         )}
 
-        {current.kind === "order" ? (
-          <OrderApprovalBody item={current} />
-        ) : (
-          <>
-            <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Product</dt>
-                <dd className="mt-0.5 font-medium">{current.product}</dd>
-              </div>
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Qty</dt>
-                <dd className="mt-0.5 font-medium tabular-nums">{current.qty}</dd>
-              </div>
-              {current.kind === "purchase" ? (
-                <>
-                  <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                    <dt className="text-xs text-muted-foreground">Type</dt>
-                    <dd className="mt-0.5 font-medium">Purchase requirement</dd>
-                  </div>
-                  <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                    <dt className="text-xs text-muted-foreground">Ref</dt>
-                    <dd className="mt-0.5 font-medium">{current.salesperson}</dd>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                    <dt className="text-xs text-muted-foreground">Asked</dt>
-                    <dd className="mt-0.5 font-medium tabular-nums text-warning">{money(current.asked)}</dd>
-                  </div>
-                  <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                    <dt className="text-xs text-muted-foreground">Floor</dt>
-                    <dd className="mt-0.5 font-medium tabular-nums">{money(current.floor)}</dd>
-                  </div>
-                </>
-              )}
-            </dl>
-
-            {current.kind !== "purchase" && current.asked < current.floor && (
-              <p className="mt-3 text-xs text-destructive">{inr(current.floor - current.asked)} below floor</p>
-            )}
-            {current.kind === "purchase" && (
-              <p className="mt-3 text-xs text-muted-foreground">
-                Approve so Supervisor can receive from the manufacturer and book inward + batch.
-              </p>
-            )}
-          </>
-        )}
+        <OrderApprovalBody item={current} />
 
         {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
 
@@ -448,7 +315,7 @@ export function ApprovalPopup({
           <button
             type="button"
             disabled={!!busy}
-            onClick={() => decide("approve")}
+            onClick={() => void decide("approve")}
             className="rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground disabled:opacity-60"
           >
             {busy === current.key ? "…" : "Approve"}
@@ -456,7 +323,7 @@ export function ApprovalPopup({
           <button
             type="button"
             disabled={!!busy}
-            onClick={() => decide("reject")}
+            onClick={() => void decide("reject")}
             className="rounded-xl border border-border px-4 py-3 text-sm text-destructive disabled:opacity-60"
           >
             Decline

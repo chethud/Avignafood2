@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { money } from "@/lib/format";
 import { useCompany } from "@/lib/company-context";
@@ -87,6 +87,9 @@ function Clients() {
   const [pays, setPays] = useState<PaymentRow[]>([]);
   const [error, setError] = useState("");
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [q, setQ] = useState("");
+  const [firmF, setFirmF] = useState("all");
+  const [balanceF, setBalanceF] = useState("all");
 
   useEffect(() => {
     setError("");
@@ -119,6 +122,31 @@ function Clients() {
   const revenue = rows.reduce((a, r) => a + Number(r.total_revenue || 0), 0);
   const outstanding = rows.reduce((a, r) => a + Number(r.outstanding || 0), 0);
   const fulfilled = rows.reduce((a, r) => a + r.orders_fulfilled, 0);
+
+  const firmOptions = useMemo(() => {
+    const names = [...new Set(rows.map((r) => r.company_name || "").filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    return names;
+  }, [rows]);
+
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((c) => {
+      if (firmF !== "all" && (c.company_name || "") !== firmF) return false;
+      if (balanceF === "outstanding" && !(Number(c.outstanding) > 0)) return false;
+      if (balanceF === "overdue" && !(Number(c.overdue || 0) > 0)) return false;
+      if (balanceF === "clear" && Number(c.outstanding) > 0) return false;
+      if (!needle) return true;
+      return `${c.name} ${c.company_name || ""} ${c.gstin || ""} ${c.phone || ""}`.toLowerCase().includes(needle);
+    });
+  }, [rows, q, firmF, balanceF]);
+
+  const filtersActive = Boolean(q.trim()) || firmF !== "all" || balanceF !== "all";
+
+  function clearFilters() {
+    setQ("");
+    setFirmF("all");
+    setBalanceF("all");
+  }
 
   if (openId) {
     return (
@@ -221,9 +249,56 @@ function Clients() {
         <Kpi label="Revenue billed" value={money(revenue)} meta={`${money(outstanding)} outstanding`} tone="good" />
       </div>
 
-      <Panel title="Customer financials" hint="Tap a row for full order history" className="mt-6">
+      <Panel
+        title="Customer financials"
+        hint={
+          filtersActive
+            ? `Showing ${visible.length} of ${rows.length}`
+            : "Tap a row for full order history"
+        }
+        className="mt-6"
+      >
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <input
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2"
+            placeholder="Search customer, firm, GSTIN, phone"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={firmF}
+            onChange={(e) => setFirmF(e.target.value)}
+          >
+            <option value="all">All firms</option>
+            {firmOptions.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={balanceF}
+            onChange={(e) => setBalanceF(e.target.value)}
+          >
+            <option value="all">All balances</option>
+            <option value="outstanding">Has outstanding</option>
+            <option value="overdue">Has overdue</option>
+            <option value="clear">Cleared</option>
+          </select>
+        </div>
+        <div className="mb-3">
+          {filtersActive ? (
+            <button type="button" className="text-sm text-primary hover:underline" onClick={clearFilters}>
+              Clear filters
+            </button>
+          ) : (
+            <span className="text-sm text-muted-foreground">{rows.length} customer(s)</span>
+          )}
+        </div>
         <Table head={["Customer", "Firms", "Limit", "Days", "Invoiced", "Paid", "Outstanding", "Overdue"]}>
-          {rows.map((c) => (
+          {visible.map((c) => (
             <tr
               key={c.customer_id}
               className="cursor-pointer hover:bg-secondary/50"
@@ -240,7 +315,11 @@ function Clients() {
             </tr>
           ))}
         </Table>
-        {!rows.length && !error && <p className="mt-3 text-sm text-muted-foreground">No customers billed yet.</p>}
+        {!visible.length && !error && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {rows.length ? "No customers match this view." : "No customers billed yet."}
+          </p>
+        )}
       </Panel>
     </>
   );

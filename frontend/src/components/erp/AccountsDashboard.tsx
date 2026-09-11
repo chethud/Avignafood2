@@ -25,11 +25,6 @@ type AccountsDash = {
   today_billing?: string;
   due_soon?: string;
   cost_of_delay?: string;
-  aging_current?: string;
-  aging_d1_30?: string;
-  aging_d31_60?: string;
-  aging_d61_90?: string;
-  aging_d90_plus?: string;
   ready_to_invoice?: number;
 };
 
@@ -57,14 +52,6 @@ export function AccountsDashboard() {
     { label: "Today's collections", value: data ? money(data.today_collections) : "—", to: "/payments" as const },
   ];
 
-  const aging = [
-    { label: "Current", value: data?.aging_current, bucket: "current" },
-    { label: "1–30", value: data?.aging_d1_30, bucket: "d1_30" },
-    { label: "31–60", value: data?.aging_d31_60, bucket: "d31_60" },
-    { label: "61–90", value: data?.aging_d61_90, bucket: "d61_90" },
-    { label: "90+", value: data?.aging_d90_plus, bucket: "d90" },
-  ];
-
   return (
     <>
       <PageHeader
@@ -88,21 +75,9 @@ export function AccountsDashboard() {
         ))}
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        <Panel title="Receivables ageing">
-          <ul className="space-y-2 text-sm">
-            {aging.map((b) => (
-              <li key={b.label}>
-                <Link to="/receivables" search={{ bucket: b.bucket }} className={rowCls}>
-                  <span>{b.label}</span>
-                  <span className="tabular-nums font-medium">{data ? money(b.value || 0) : "—"}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </Panel>
+      <div className="mt-6">
         <Panel title="Work queue">
-          <ul className="space-y-3 text-sm">
+          <ul className="space-y-3 text-sm sm:grid sm:grid-cols-2 sm:gap-3 sm:space-y-0">
             <li>
               <Link to="/invoices" className={rowCls}>
                 <span>Ready to invoice</span>
@@ -110,7 +85,7 @@ export function AccountsDashboard() {
               </Link>
             </li>
             <li>
-              <Link to="/payments" className={rowCls}>
+              <Link to="/receivables" className={rowCls}>
                 <span>Pending payments</span>
                 <Badge tone={data && data.pending_payments > 0 ? "warn" : "good"}>{data?.pending_payments ?? 0}</Badge>
               </Link>
@@ -151,11 +126,11 @@ export function AccountsDashboard() {
           <Link to="/invoices" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
             Raise invoices →
           </Link>
-          <Link to="/payments" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
-            Record payments →
-          </Link>
           <Link to="/receivables" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
-            Open invoice register →
+            Receive / update payments →
+          </Link>
+          <Link to="/payments" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
+            Payment register →
           </Link>
           <Link to="/collection" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
             Collection follow-up →

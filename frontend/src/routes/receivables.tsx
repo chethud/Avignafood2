@@ -1,10 +1,10 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { money } from "@/lib/format";
 import { useCompany } from "@/lib/company-context";
-import { PAY_MODES, agingBucket, dueCountdown, payStatus, payStatusLabel } from "@/lib/accounts";
-import { firmLabelByCompanyId } from "@/lib/erp-data";
+import { PAY_MODES, agingBucket, dueCountdown, payModeLabel, payStatus, payStatusLabel } from "@/lib/accounts";
+import { firmLabelByCompanyId, firms } from "@/lib/erp-data";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
 
 export const Route = createFileRoute("/receivables")({
@@ -32,22 +32,26 @@ type InvoiceRow = {
   due_date: string | null;
   status: string;
   total: string | number;
+  amount_paid?: string | number;
   outstanding: string | number;
   credit_days: number | null;
   delay_days?: number;
   interest_loss?: string | number;
   penalty_waived?: boolean;
+  payment_status?: string;
+  subtotal?: string | number;
+  tax_amount?: string | number;
 };
 
-type AgingRow = {
-  customer_id: number;
-  customer_name: string;
-  current: string | number;
-  d1_30: string | number;
-  d31_60: string | number;
-  d61_90: string | number;
-  d90_plus: string | number;
-  total: string | number;
+type PaymentRow = {
+  id: number;
+  invoice_id: number;
+  invoice_number: string | null;
+  customer_name: string | null;
+  amount: string | number;
+  method: string;
+  reference: string | null;
+  paid_at: string;
 };
 
 const inputCls =
@@ -55,24 +59,28 @@ const inputCls =
 
 function Receivables() {
   const { firm } = useCompany();
+  const navigate = useNavigate({ from: Route.fullPath });
   const { overdue: overdueParam, bucket, focus } = Route.useSearch();
   const [rows, setRows] = useState<InvoiceRow[]>([]);
-  const [aging, setAging] = useState<AgingRow[]>([]);
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [error, setError] = useState("");
+  const [detail, setDetail] = useState<InvoiceRow | null>(null);
   const [payFor, setPayFor] = useState<InvoiceRow | null>(null);
-  const [alloc, setAlloc] = useState(false);
+  const [payKind, setPayKind] = useState<"partial" | "full">("partial");
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ amount: "", method: "bank", reference: "", paid_at: "" });
-  const [allocForm, setAllocForm] = useState({ customer_id: "", amount: "", method: "bank", reference: "", paid_at: "" });
+  const [q, setQ] = useState("");
+  const [statusF, setStatusF] = useState("all");
+  const [companyF, setCompanyF] = useState("all");
+  const [form, setForm] = useState({ amount: "", method: "", reference: "", paid_at: "" });
 
   async function load() {
     try {
-      const [inv, age] = await Promise.all([
+      const [inv, pay] = await Promise.all([
         api<InvoiceRow[]>("/api/v1/invoices"),
-        api<AgingRow[]>("/api/v1/accounts/aging").catch(() => [] as AgingRow[]),
+        api<PaymentRow[]>("/api/v1/payments").catch(() => [] as PaymentRow[]),
       ]);
       setRows(inv);
-      setAging(age);
+      setPayments(pay);
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load receivables");
@@ -89,7 +97,9 @@ function Receivables() {
   );
 
   const filteredOpen = useMemo(() => {
+    const needle = q.trim().toLowerCase();
     let list = open;
+
     if (overdueParam === "1") {
       list = list.filter((i) => i.due_date && new Date(i.due_date) < new Date());
     }
@@ -111,8 +121,65 @@ function Receivables() {
     if (focus === "delay") {
       list = list.filter((i) => Number(i.interest_loss || 0) > 0);
     }
+    if (statusF === "open") {
+      list = list.filter((i) => i.status === "open" && payStatus(i) !== "overdue");
+    } else if (statusF === "partial") {
+      list = list.filter((i) => i.status === "partial");
+    } else if (statusF === "overdue") {
+      list = list.filter((i) => payStatus(i) === "overdue");
+    }
+    if (companyF !== "all") {
+      const cid = Number(companyF);
+      list = list.filter((i) => i.company_id === cid);
+    }
+    if (needle) {
+      list = list.filter((i) =>
+        `${i.number} ${i.customer_name || ""} ${firmLabelByCompanyId(i.company_id)}`
+          .toLowerCase()
+          .includes(needle),
+      );
+    }
     return list;
-  }, [open, overdueParam, bucket, focus]);
+  }, [open, overdueParam, bucket, focus, statusF, companyF, q]);
+
+  const filtersActive =
+    Boolean(overdueParam === "1" || bucket || focus) || statusF !== "all" || companyF !== "all" || Boolean(q.trim());
+
+  function clearRegisterFilters() {
+    setQ("");
+    setStatusF("all");
+    setCompanyF("all");
+    void navigate({ search: {} });
+  }
+
+  function setDueFilter(value: string) {
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        overdue: value === "overdue" ? "1" : undefined,
+        focus: value === "delay" ? "delay" : prev.focus === "delay" && value !== "delay" ? undefined : prev.focus,
+      }),
+    });
+  }
+
+  function setBucketFilter(value: string) {
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        bucket: value === "all" ? undefined : value,
+      }),
+    });
+  }
+
+  const dueFilterValue = overdueParam === "1" ? "overdue" : focus === "delay" ? "delay" : "all";
+  const bucketFilterValue = bucket || "all";
+
+  const companiesInOpen = useMemo(() => {
+    const ids = [...new Set(open.map((i) => i.company_id))];
+    return ids
+      .map((id) => ({ id, label: firmLabelByCompanyId(id) || firms.find((f) => f.companyId === id)?.short || `Company ${id}` }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [open]);
 
   const outstanding = open.reduce((a, i) => a + Number(i.outstanding || 0), 0);
   const overdueRows = open.filter((i) => i.due_date && new Date(i.due_date) < new Date());
@@ -131,9 +198,10 @@ function Receivables() {
   function startPay(i: InvoiceRow) {
     setError("");
     setPayFor(i);
+    setPayKind("partial");
     setForm({
-      amount: String(Number(i.outstanding) || ""),
-      method: "neft",
+      amount: "",
+      method: "",
       reference: "",
       paid_at: new Date().toISOString().slice(0, 10),
     });
@@ -143,8 +211,26 @@ function Receivables() {
     e.preventDefault();
     if (!payFor) return;
     const amount = Number(form.amount);
+    const due = Number(payFor.outstanding) || 0;
+    const reference = form.reference.trim();
     if (!(amount > 0)) {
       setError("Enter a positive amount");
+      return;
+    }
+    if (amount > due + 0.0001) {
+      setError(`Amount cannot exceed outstanding ${money(due)}`);
+      return;
+    }
+    if (!form.method) {
+      setError("Select payment mode");
+      return;
+    }
+    if (!reference) {
+      setError("Reference (UTR / cheque no.) is required");
+      return;
+    }
+    if (!form.paid_at) {
+      setError("Paid on date is required");
       return;
     }
     setBusy(true);
@@ -157,12 +243,21 @@ function Receivables() {
           invoice_id: payFor.id,
           amount,
           method: form.method,
-          reference: form.reference.trim() || null,
-          paid_at: form.paid_at || null,
+          reference,
+          paid_at: form.paid_at,
         }),
       });
       setPayFor(null);
-      await load();
+      const [inv, pay] = await Promise.all([
+        api<InvoiceRow[]>("/api/v1/invoices"),
+        api<PaymentRow[]>("/api/v1/payments").catch(() => [] as PaymentRow[]),
+      ]);
+      setRows(inv);
+      setPayments(pay);
+      if (detail) {
+        const refreshed = inv.find((x) => x.id === detail.id);
+        setDetail(refreshed || null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not record payment");
     } finally {
@@ -170,60 +265,30 @@ function Receivables() {
     }
   }
 
-  const customers = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const i of open) {
-      if (i.customer_id) map.set(i.customer_id, i.customer_name || `Customer ${i.customer_id}`);
-    }
-    return [...map.entries()].map(([id, name]) => ({ id, name }));
-  }, [open]);
+  const detailReceipts = useMemo(() => {
+    if (!detail) return [] as PaymentRow[];
+    return payments
+      .filter((p) => p.invoice_id === detail.id)
+      .sort((a, b) => String(b.paid_at).localeCompare(String(a.paid_at)) || b.id - a.id);
+  }, [detail, payments]);
 
-  async function saveAllocate(e: React.FormEvent) {
-    e.preventDefault();
-    const amount = Number(allocForm.amount);
-    const sample = open.find((i) => String(i.customer_id) === allocForm.customer_id);
-    if (!(amount > 0) || !sample) {
-      setError("Choose a customer and enter a positive amount");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api("/api/v1/accounts/allocate", {
-        method: "POST",
-        companyId: sample.company_id,
-        body: JSON.stringify({
-          customer_id: sample.customer_id,
-          amount,
-          method: allocForm.method,
-          reference: allocForm.reference.trim() || null,
-          paid_at: allocForm.paid_at || null,
-        }),
-      });
-      setAlloc(false);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not allocate payment");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const detailPaidTotal = detailReceipts.reduce((a, p) => a + Number(p.amount || 0), 0);
 
   return (
     <>
       <PageHeader
         title="Receivables"
-        subtitle="Open invoice register: due date, days to due, days overdue, ageing and cost of delay."
+        subtitle="Update pending amounts here — receive full or partial on each open invoice. All receipts appear on Payments."
         action={
-          <Link to="/payments" className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
-            Record payment
+          <Link to="/payments" className="rounded-lg border border-border px-3 py-2 text-sm">
+            View all payments
           </Link>
         }
       />
-      {error && !payFor && !alloc && <p className="mb-3 text-sm text-destructive">{error}</p>}
+      {error && !payFor && !detail && <p className="mb-3 text-sm text-destructive">{error}</p>}
       {focus === "credit" && (
         <p className="mb-3 rounded-xl border border-border bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
-          Credit alerts — review ageing totals below and customers with high outstanding vs limit on Collection.
+          Credit alerts — review customers with high outstanding vs limit on Collection.
         </p>
       )}
 
@@ -237,41 +302,84 @@ function Receivables() {
       <Panel
         title="Open invoice register"
         hint={
-          overdueParam === "1" || bucket || focus
-            ? `Filtered · ${filteredOpen.length} of ${open.length} open`
-            : "Due countdown is automatic from the customer’s credit days"
+          filtersActive
+            ? `Showing ${filteredOpen.length} of ${open.length} open`
+            : "Tap a row for full details and receipt history · Receive full or partial on each invoice"
         }
         className="mt-6"
       >
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          {(overdueParam === "1" || bucket || focus) && (
-            <Link to="/receivables" search={{}} className="text-sm text-primary hover:underline">
-              Clear filter
-            </Link>
-          )}
-          <button
-            type="button"
-            className="ml-auto rounded-lg border border-border px-3 py-1.5 text-sm"
-            onClick={() => {
-              setError("");
-              setAllocForm({
-                customer_id: customers[0] ? String(customers[0].id) : "",
-                amount: "",
-                method: "neft",
-                reference: "",
-                paid_at: new Date().toISOString().slice(0, 10),
-              });
-              setAlloc(true);
-            }}
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+          <input
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2 lg:col-span-2"
+            placeholder="Search invoice, customer, company"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={statusF}
+            onChange={(e) => setStatusF(e.target.value)}
           >
-            Allocate payment
-          </button>
+            <option value="all">All statuses</option>
+            <option value="open">Unpaid</option>
+            <option value="partial">Partially paid</option>
+            <option value="overdue">Overdue</option>
+          </select>
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={bucketFilterValue}
+            onChange={(e) => setBucketFilter(e.target.value)}
+          >
+            <option value="all">All ageing</option>
+            <option value="current">Current</option>
+            <option value="d1_30">1–30 days</option>
+            <option value="d31_60">31–60 days</option>
+            <option value="d61_90">61–90 days</option>
+            <option value="d90">90+ days</option>
+          </select>
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={dueFilterValue}
+            onChange={(e) => setDueFilter(e.target.value)}
+          >
+            <option value="all">All due</option>
+            <option value="overdue">Overdue only</option>
+            <option value="delay">Cost of delay</option>
+          </select>
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={companyF}
+            onChange={(e) => setCompanyF(e.target.value)}
+          >
+            <option value="all">All companies</option>
+            {companiesInOpen.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="mb-3">
+          {filtersActive ? (
+            <button type="button" className="text-sm text-primary hover:underline" onClick={clearRegisterFilters}>
+              Clear filters
+            </button>
+          ) : (
+            <span className="text-sm text-muted-foreground">{open.length} open invoice(s)</span>
+          )}
         </div>
         <Table head={["Company", "Customer", "Invoice", "Due", "Countdown", "Outstanding", "Ageing", "Cost of delay", "Status", ""]}>
           {filteredOpen.map((i) => {
             const pay = payStatus(i);
             return (
-              <tr key={i.id}>
+              <tr
+                key={i.id}
+                className="cursor-pointer hover:bg-secondary/50"
+                onClick={() => {
+                  setError("");
+                  setDetail(i);
+                }}
+              >
                 <Td className="text-muted-foreground">{firmLabelByCompanyId(i.company_id)}</Td>
                 <Td>{i.customer_name || "—"}</Td>
                 <Td className="font-medium">{i.number}</Td>
@@ -284,9 +392,9 @@ function Receivables() {
                   <Badge tone={pay === "overdue" ? "bad" : pay === "partial" ? "warn" : "neutral"}>{payStatusLabel(pay)}</Badge>
                 </Td>
                 <Td>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
                     <button type="button" className="text-sm text-primary hover:underline" onClick={() => startPay(i)}>
-                      Payment
+                      Receive
                     </button>
                     {Number(i.interest_loss || 0) > 0 && !i.penalty_waived && (
                       <button
@@ -323,22 +431,130 @@ function Receivables() {
         )}
       </Panel>
 
-      <Panel title="Aging" hint="Current · 1–30 · 31–60 · 61–90 · 90+" className="mt-6">
-        <Table head={["Customer", "Current", "1–30", "31–60", "61–90", "90+", "Total"]}>
-          {aging.map((r) => (
-            <tr key={r.customer_id}>
-              <Td className="font-medium">{r.customer_name}</Td>
-              <Td className="tabular-nums">{money(r.current)}</Td>
-              <Td className="tabular-nums">{money(r.d1_30)}</Td>
-              <Td className="tabular-nums">{money(r.d31_60)}</Td>
-              <Td className="tabular-nums">{money(r.d61_90)}</Td>
-              <Td className="tabular-nums">{money(r.d90_plus)}</Td>
-              <Td className="tabular-nums font-medium">{money(r.total)}</Td>
-            </tr>
-          ))}
-        </Table>
-        {!aging.length && <p className="mt-3 text-sm text-muted-foreground">No aging buckets yet.</p>}
-      </Panel>
+      {detail && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
+          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={() => setDetail(null)} />
+          <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-lg sm:rounded-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">{detail.number}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {detail.customer_name || "Customer"} · {firmLabelByCompanyId(detail.company_id)}
+                </p>
+              </div>
+              <Badge
+                tone={
+                  payStatus(detail) === "overdue"
+                    ? "bad"
+                    : payStatus(detail) === "partial"
+                      ? "warn"
+                      : payStatus(detail) === "paid"
+                        ? "good"
+                        : "neutral"
+                }
+              >
+                {payStatusLabel(payStatus(detail))}
+              </Badge>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-muted-foreground">Invoice date</p>
+                <p className="font-medium">{detail.invoice_date}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Due date</p>
+                <p className="font-medium">{detail.due_date || "—"}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Countdown</p>
+                <p className="font-medium">{dueCountdown(detail.due_date)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Ageing</p>
+                <p className="font-medium">{agingBucket(detail.due_date)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Invoice total</p>
+                <p className="font-medium tabular-nums">{money(detail.total)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Paid so far</p>
+                <p className="font-medium tabular-nums">{money(detail.amount_paid ?? detailPaidTotal)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Outstanding</p>
+                <p className="font-semibold tabular-nums">{money(detail.outstanding)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Cost of delay</p>
+                <p className="font-medium tabular-nums">{money(detail.interest_loss || 0)}</p>
+              </div>
+              {detail.credit_days != null && (
+                <div>
+                  <p className="text-muted-foreground">Credit days</p>
+                  <p className="font-medium">{detail.credit_days}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5">
+              <h3 className="text-sm font-semibold">Receipt history</h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Each partial or full receipt with paid date
+              </p>
+              {detailReceipts.length ? (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full min-w-[28rem] text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-xs text-muted-foreground">
+                        <th className="py-2 pr-3 font-medium">Paid on</th>
+                        <th className="py-2 pr-3 font-medium">Amount</th>
+                        <th className="py-2 pr-3 font-medium">Mode</th>
+                        <th className="py-2 font-medium">Reference</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detailReceipts.map((p) => (
+                        <tr key={p.id} className="border-b border-border/60">
+                          <td className="py-2.5 pr-3 text-muted-foreground">{String(p.paid_at).slice(0, 10)}</td>
+                          <td className="py-2.5 pr-3 font-medium tabular-nums">{money(p.amount)}</td>
+                          <td className="py-2.5 pr-3">{payModeLabel(p.method)}</td>
+                          <td className="py-2.5 text-muted-foreground">{p.reference || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td className="pt-3 pr-3 text-muted-foreground">Total received</td>
+                        <td className="pt-3 pr-3 font-semibold tabular-nums">{money(detailPaidTotal)}</td>
+                        <td colSpan={2} />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-muted-foreground">No receipts yet on this invoice.</p>
+              )}
+            </div>
+
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground"
+                onClick={() => {
+                  startPay(detail);
+                }}
+              >
+                Receive payment
+              </button>
+              <button type="button" onClick={() => setDetail(null)} className="rounded-lg border border-border py-2.5 text-sm">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {payFor && (
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
@@ -347,114 +563,139 @@ function Receivables() {
             onSubmit={(e) => void savePayment(e)}
             className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl"
           >
-            <h2 className="text-lg font-semibold">Record payment</h2>
+            <h2 className="text-lg font-semibold">Receive payment</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              {payFor.number} · {payFor.customer_name || "Customer"} · due {money(payFor.outstanding)}
+              {payFor.number} · {payFor.customer_name || "Customer"}
             </p>
+            <p className="mt-2 text-sm">
+              Outstanding <span className="font-semibold tabular-nums">{money(payFor.outstanding)}</span>
+            </p>
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                className={
+                  payKind === "partial"
+                    ? "rounded-xl bg-primary px-3 py-2.5 text-sm font-semibold text-primary-foreground"
+                    : "rounded-xl border border-border px-3 py-2.5 text-sm font-medium"
+                }
+                onClick={() => {
+                  setPayKind("partial");
+                  setForm((f) => ({ ...f, amount: "" }));
+                }}
+              >
+                Partial
+              </button>
+              <button
+                type="button"
+                className={
+                  payKind === "full"
+                    ? "rounded-xl bg-primary px-3 py-2.5 text-sm font-semibold text-primary-foreground"
+                    : "rounded-xl border border-border px-3 py-2.5 text-sm font-medium"
+                }
+                onClick={() => {
+                  setPayKind("full");
+                  setForm((f) => ({ ...f, amount: String(Number(payFor.outstanding) || "") }));
+                }}
+              >
+                Full settlement
+              </button>
+            </div>
+
             <div className="mt-4 space-y-3">
               <label className="block text-sm text-muted-foreground">
-                Amount
+                {payKind === "partial" ? "Partial amount received *" : "Amount received *"}
                 <input
                   required
                   type="number"
                   min="0.01"
                   step="0.01"
+                  inputMode="decimal"
+                  placeholder={
+                    payKind === "partial"
+                      ? `e.g. ${Math.max(1, Math.round(Number(payFor.outstanding) / 4))}`
+                      : String(Number(payFor.outstanding) || "")
+                  }
                   className={inputCls}
                   value={form.amount}
-                  onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+                  readOnly={payKind === "full"}
+                  onChange={(e) => {
+                    setPayKind("partial");
+                    setForm((f) => ({ ...f, amount: e.target.value }));
+                  }}
                 />
               </label>
+              {payKind === "partial" && (
+                <div className="flex flex-wrap gap-2">
+                  {[0.25, 0.5, 0.75].map((frac) => {
+                    const v = Math.round(Number(payFor.outstanding) * frac * 100) / 100;
+                    if (!(v > 0) || v >= Number(payFor.outstanding)) return null;
+                    return (
+                      <button
+                        key={frac}
+                        type="button"
+                        className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-secondary"
+                        onClick={() => setForm((f) => ({ ...f, amount: String(v) }))}
+                      >
+                        {frac === 0.25 ? "25%" : frac === 0.5 ? "50%" : "75%"} · {money(v)}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {Number(form.amount) > 0 && Number(form.amount) < Number(payFor.outstanding) && (
+                <p className="rounded-xl border border-border bg-secondary/40 px-3 py-2 text-sm">
+                  Invoice will stay <span className="font-medium">Partially paid</span>. Remaining{" "}
+                  <span className="font-semibold tabular-nums">
+                    {money(Math.max(0, Number(payFor.outstanding) - Number(form.amount)))}
+                  </span>
+                </p>
+              )}
               <label className="block text-sm text-muted-foreground">
-                Mode
-                <select className={inputCls} value={form.method} onChange={(e) => setForm((f) => ({ ...f, method: e.target.value }))}>
-                  {PAY_MODES.map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-sm text-muted-foreground">
-                Reference
-                <input className={inputCls} value={form.reference} onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))} placeholder="UTR / cheque no." />
-              </label>
-              <label className="block text-sm text-muted-foreground">
-                Paid on
-                <input type="date" className={inputCls} value={form.paid_at} onChange={(e) => setForm((f) => ({ ...f, paid_at: e.target.value }))} />
-              </label>
-            </div>
-            {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-            <div className="mt-5 grid grid-cols-2 gap-2">
-              <button type="submit" disabled={busy} className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">
-                {busy ? "Saving…" : "Save payment"}
-              </button>
-              <button type="button" onClick={() => setPayFor(null)} className="rounded-lg border border-border py-2.5 text-sm">
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {alloc && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={() => setAlloc(false)} />
-          <form
-            onSubmit={(e) => void saveAllocate(e)}
-            className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl"
-          >
-            <h2 className="text-lg font-semibold">Allocate payment</h2>
-            <p className="mt-1 text-sm text-muted-foreground">FIFO across the customer’s open invoices.</p>
-            <div className="mt-4 space-y-3">
-              <label className="block text-sm text-muted-foreground">
-                Customer
+                Mode *
                 <select
                   required
                   className={inputCls}
-                  value={allocForm.customer_id}
-                  onChange={(e) => setAllocForm((f) => ({ ...f, customer_id: e.target.value }))}
+                  value={form.method}
+                  onChange={(e) => setForm((f) => ({ ...f, method: e.target.value }))}
                 >
-                  <option value="">Select</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-sm text-muted-foreground">
-                Amount
-                <input
-                  required
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  className={inputCls}
-                  value={allocForm.amount}
-                  onChange={(e) => setAllocForm((f) => ({ ...f, amount: e.target.value }))}
-                />
-              </label>
-              <label className="block text-sm text-muted-foreground">
-                Mode
-                <select className={inputCls} value={allocForm.method} onChange={(e) => setAllocForm((f) => ({ ...f, method: e.target.value }))}>
+                  <option value="">Select mode</option>
                   {PAY_MODES.map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
                 </select>
               </label>
               <label className="block text-sm text-muted-foreground">
-                Reference
-                <input className={inputCls} value={allocForm.reference} onChange={(e) => setAllocForm((f) => ({ ...f, reference: e.target.value }))} placeholder="UTR / cheque no." />
+                Reference *
+                <input
+                  required
+                  className={inputCls}
+                  value={form.reference}
+                  onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))}
+                  placeholder="UTR / cheque no."
+                />
               </label>
               <label className="block text-sm text-muted-foreground">
-                Paid on
-                <input type="date" className={inputCls} value={allocForm.paid_at} onChange={(e) => setAllocForm((f) => ({ ...f, paid_at: e.target.value }))} />
+                Paid on *
+                <input
+                  required
+                  type="date"
+                  className={inputCls}
+                  value={form.paid_at}
+                  onChange={(e) => setForm((f) => ({ ...f, paid_at: e.target.value }))}
+                />
               </label>
             </div>
             {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
             <div className="mt-5 grid grid-cols-2 gap-2">
               <button type="submit" disabled={busy} className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">
-                {busy ? "Saving…" : "Allocate"}
+                {busy
+                  ? "Saving…"
+                  : payKind === "partial" || (Number(form.amount) > 0 && Number(form.amount) < Number(payFor.outstanding))
+                    ? "Receive partial"
+                    : "Receive full"}
               </button>
-              <button type="button" onClick={() => setAlloc(false)} className="rounded-lg border border-border py-2.5 text-sm">
+              <button type="button" onClick={() => setPayFor(null)} className="rounded-lg border border-border py-2.5 text-sm">
                 Cancel
               </button>
             </div>

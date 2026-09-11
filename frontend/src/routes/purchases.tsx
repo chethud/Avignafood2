@@ -68,6 +68,9 @@ function Purchases() {
   const [newCustomer, setNewCustomer] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState("");
+  const [statusF, setStatusF] = useState("all");
+  const [sourceF, setSourceF] = useState("all");
   const [form, setForm] = useState({
     customer_id: "",
     customer_name: "",
@@ -253,6 +256,24 @@ function Purchases() {
   const incoming = useMemo(() => openOrders.reduce((a, p) => a + (p.qty - p.received), 0), [openOrders]);
   const committed = useMemo(() => rows.reduce((a, p) => a + p.value, 0), [rows]);
 
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((p) => {
+      if (statusF !== "all" && p.status.toLowerCase() !== statusF.toLowerCase()) return false;
+      if (sourceF !== "all" && p.source !== sourceF) return false;
+      if (!needle) return true;
+      return `${p.id} ${p.customer} ${p.manufacturer} ${p.product} ${p.source} ${p.status}`.toLowerCase().includes(needle);
+    });
+  }, [rows, q, statusF, sourceF]);
+
+  const filtersActive = Boolean(q.trim()) || statusF !== "all" || sourceF !== "all";
+
+  function clearFilters() {
+    setQ("");
+    setStatusF("all");
+    setSourceF("all");
+  }
+
   return (
     <>
       <PageHeader
@@ -275,9 +296,40 @@ function Purchases() {
         <Kpi label="Committed value" value={inr(committed)} />
       </div>
 
-      <Panel title="Purchase orders" hint="Customer-linked bills" className="mt-6">
+      <Panel
+        title="Purchase orders"
+        hint={filtersActive ? `Showing ${visible.length} of ${rows.length}` : "Customer-linked bills"}
+        className="mt-6"
+      >
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <input
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2"
+            placeholder="Search PO, customer, product"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={statusF} onChange={(e) => setStatusF(e.target.value)}>
+            <option value="all">All statuses</option>
+            <option value="Draft">Draft</option>
+            <option value="Confirmed">Confirmed</option>
+            <option value="Received">Received</option>
+          </select>
+          <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={sourceF} onChange={(e) => setSourceF(e.target.value)}>
+            <option value="all">All sources</option>
+            {SOURCES.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {filtersActive && (
+          <button type="button" className="mb-3 text-sm text-primary hover:underline" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
         <Table head={["PO", "Customer", "Source", "Manufacturer", "Product", "Ordered", "Received", "Progress", "Value", "ETA", "Status"]}>
-          {rows.map((p) => (
+          {visible.map((p) => (
             <tr key={p.id}>
               <Td className="font-medium">{p.id}</Td>
               <Td>{p.customer}</Td>
@@ -299,7 +351,11 @@ function Purchases() {
             </tr>
           ))}
         </Table>
-        {!rows.length && <p className="py-8 text-center text-sm text-muted-foreground">No purchases yet.</p>}
+        {!visible.length && (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            {rows.length ? "No purchases match this view." : "No purchases yet."}
+          </p>
+        )}
       </Panel>
 
       {open && (

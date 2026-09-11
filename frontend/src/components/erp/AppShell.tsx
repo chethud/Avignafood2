@@ -13,8 +13,8 @@ import { getToken, mediaUrl } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { applyBrand } from "@/lib/brand";
 import { nameInitials } from "@/lib/format";
-import { ApprovalPopup, usePendingApprovals } from "@/components/erp/ApprovalPopup";
 import { InvoiceRequestPopup, useInvoiceRequests } from "@/components/erp/InvoiceRequestPopup";
+import { usePendingApprovals } from "@/components/erp/ApprovalPopup";
 import { Badge } from "@/components/erp/ui-bits";
 
 function ProfileAvatar({
@@ -85,6 +85,7 @@ const ownerNav: NavSection[] = [
     items: [
       { to: "/invoices", label: "Invoices", icon: ReceiptText },
       { to: "/receivables", label: "Receivables", icon: Wallet },
+      { to: "/payments", label: "Payments received", icon: Banknote },
       { to: "/credit", label: "Credit control", icon: Scale },
       { to: "/reports", label: "Accounts reports", icon: BarChart3 },
       { to: "/analytics", label: "Analytics", icon: BarChart3 },
@@ -141,7 +142,7 @@ const navByRole: Record<string, NavSection[]> = {
       items: [
         { to: "/invoices", label: "Invoices", icon: ReceiptText },
         { to: "/receivables", label: "Receivables", icon: Wallet },
-        { to: "/payments", label: "Payments", icon: Banknote },
+        { to: "/payments", label: "Payments received", icon: Banknote },
         { to: "/clients", label: "Customers", icon: Users },
         { to: "/more", label: "More", icon: Menu },
       ],
@@ -389,14 +390,13 @@ function CompanySwitcher({ compact, hideThumb }: { compact?: boolean; hideThumb?
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [approvalOpen, setApprovalOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const { me, loading } = useMe();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
   const { firm } = useCompany();
   const activeFirm = firms.find((f) => f.id === firm);
-  const { items, dismiss, canApprove } = usePendingApprovals();
+  const { items, canApprove } = usePendingApprovals();
   const { items: invoiceRequests, dismiss: dismissInvoice, canInvoice } = useInvoiceRequests();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
 
@@ -404,11 +404,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (!getToken()) navigate({ to: "/login" });
     else if (!loading && !me) navigate({ to: "/login" });
   }, [navigate, loading, me]);
-
-  // Auto-open popup when new approvals arrive
-  useEffect(() => {
-    if (canApprove && items.length > 0) setApprovalOpen(true);
-  }, [canApprove, items.length]);
 
   // Auto-open when Accounts has orders waiting to invoice
   useEffect(() => {
@@ -595,17 +590,14 @@ export function AppShell({ children }: { children: ReactNode }) {
                     <p className="text-sm font-medium">Notifications</p>
                   </div>
                   {canApprove && items.length > 0 && (
-                    <button
-                      type="button"
+                    <Link
+                      to="/sales"
                       className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2.5 text-left text-sm hover:bg-secondary/60"
-                      onClick={() => {
-                        setNotifOpen(false);
-                        setApprovalOpen(true);
-                      }}
+                      onClick={() => setNotifOpen(false)}
                     >
-                      <span>Approvals waiting</span>
+                      <span>Order requests waiting</span>
                       <Badge tone="warn">{items.length}</Badge>
-                    </button>
+                    </Link>
                   )}
                   {canInvoice && invoiceRequests.length > 0 && (
                     <button
@@ -673,12 +665,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         </button>
       </nav>
 
-      <ApprovalPopup
-        open={approvalOpen && items.length > 0}
-        onClose={() => setApprovalOpen(false)}
-        items={items}
-        onDecided={(key) => dismiss(key)}
-      />
       <InvoiceRequestPopup
         open={invoiceOpen && invoiceRequests.length > 0}
         onClose={() => setInvoiceOpen(false)}

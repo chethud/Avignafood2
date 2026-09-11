@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { money } from "@/lib/format";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
@@ -53,6 +53,9 @@ function CreditControl() {
   const [error, setError] = useState("");
   const [form, setForm] = useState({ invoice_id: "", kind: "credit" as "credit" | "debit", amount: "", reason: REASONS.credit[0] });
   const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState("");
+  const [statusF, setStatusF] = useState("all");
+  const [balanceF, setBalanceF] = useState("all");
 
   async function load() {
     try {
@@ -99,6 +102,26 @@ function CreditControl() {
 
   const alerts = rows.filter((r) => r.status !== "within");
 
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (statusF !== "all" && r.status !== statusF) return false;
+      if (balanceF === "outstanding" && !(Number(r.outstanding) > 0)) return false;
+      if (balanceF === "overdue" && !(Number(r.overdue) > 0)) return false;
+      if (balanceF === "headroom" && !(Number(r.headroom) > 0)) return false;
+      if (!needle) return true;
+      return `${r.customer_name} ${r.status}`.toLowerCase().includes(needle);
+    });
+  }, [rows, q, statusF, balanceF]);
+
+  const filtersActive = Boolean(q.trim()) || statusF !== "all" || balanceF !== "all";
+
+  function clearFilters() {
+    setQ("");
+    setStatusF("all");
+    setBalanceF("all");
+  }
+
   return (
     <>
       <PageHeader
@@ -112,9 +135,50 @@ function CreditControl() {
         <Kpi label="Notes posted" value={String(notes.length)} />
       </div>
 
-      <Panel title="Credit position" hint="Projected exposure vs limit" className="mt-6">
+      <Panel
+        title="Credit position"
+        hint={filtersActive ? `Showing ${visible.length} of ${rows.length}` : "Projected exposure vs limit"}
+        className="mt-6"
+      >
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <input
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2"
+            placeholder="Search customer"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={statusF}
+            onChange={(e) => setStatusF(e.target.value)}
+          >
+            <option value="all">All statuses</option>
+            <option value="within">Within limit</option>
+            <option value="warning">Watch</option>
+            <option value="exceeded">Exceeded</option>
+          </select>
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={balanceF}
+            onChange={(e) => setBalanceF(e.target.value)}
+          >
+            <option value="all">All balances</option>
+            <option value="outstanding">Has outstanding</option>
+            <option value="overdue">Has overdue</option>
+            <option value="headroom">Has headroom</option>
+          </select>
+        </div>
+        <div className="mb-3">
+          {filtersActive ? (
+            <button type="button" className="text-sm text-primary hover:underline" onClick={clearFilters}>
+              Clear filters
+            </button>
+          ) : (
+            <span className="text-sm text-muted-foreground">{rows.length} customer(s)</span>
+          )}
+        </div>
         <Table head={["Customer", "Limit", "Days", "Outstanding", "Overdue", "Headroom", "Status"]}>
-          {rows.map((r) => (
+          {visible.map((r) => (
             <tr key={r.customer_id}>
               <Td className="font-medium">{r.customer_name}</Td>
               <Td className="tabular-nums">{money(r.credit_limit)}</Td>
@@ -130,6 +194,11 @@ function CreditControl() {
             </tr>
           ))}
         </Table>
+        {!visible.length && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {rows.length ? "No customers match this view." : "No credit positions yet."}
+          </p>
+        )}
       </Panel>
 
       <Panel title="Credit / debit note" hint="Posted notes adjust outstanding. They do not change warehouse stock." className="mt-6">

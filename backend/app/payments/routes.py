@@ -57,18 +57,17 @@ def create_payment(
     auth: AuthContext = Depends(require_perms("payments.create")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    inv = (
-        db.query(Invoice)
-        .filter(
-            Invoice.id == body.invoice_id,
-            Invoice.company_id == company_id,
-            Invoice.organization_id == auth.organization_id,
-        )
-        .first()
+    scope = auth.company_or_all()
+    inv_q = db.query(Invoice).filter(
+        Invoice.id == body.invoice_id,
+        Invoice.organization_id == auth.organization_id,
     )
+    if scope is not None:
+        inv_q = inv_q.filter(Invoice.company_id == scope)
+    inv = inv_q.first()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    company_id = inv.company_id
     if inv.status == InvoiceStatus.CANCELLED:
         raise HTTPException(status_code=400, detail="Invoice cancelled")
     outstanding = inv_outstanding(inv)

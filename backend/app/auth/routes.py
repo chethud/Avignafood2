@@ -9,9 +9,9 @@ from app.audit.service import write_audit
 from app.core.database import engine, get_db
 from app.core.deps import AuthContext, get_auth
 from app.core.models import User
-from app.core.schemas import MeOut, MeProfileUpdate, TokenOut, UserOut
+from app.core.schemas import MeOut, MePasswordChange, MeProfileUpdate, TokenOut, UserOut
 from app.sales.ensure_schema import ensure_sales_schema
-from app.core.security import create_access_token, verify_password
+from app.core.security import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -130,6 +130,34 @@ def update_me(
     )
     db.commit()
     return _reload_me(db, auth.user.id, auth.permissions)
+
+
+@router.post("/me/password")
+def change_my_password(
+    body: MePasswordChange,
+    auth: AuthContext = Depends(get_auth),
+    db: Session = Depends(get_db),
+):
+    if body.new_password != body.confirm_password:
+        raise HTTPException(status_code=400, detail="New passwords do not match")
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from current")
+    user = db.query(User).filter(User.id == auth.user.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not verify_password(body.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    user.hashed_password = hash_password(body.new_password)
+    write_audit(
+        db,
+        action="change_password",
+        entity_type="user",
+        entity_id=user.id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+    )
+    db.commit()
+    return {"ok": True, "detail": "Password updated"}
 
 
 @router.post("/me/photo", response_model=MeOut)

@@ -31,6 +31,12 @@ class MeProfileUpdate(BaseModel):
     phone: str | None = None
 
 
+class MePasswordChange(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=6)
+    confirm_password: str = Field(min_length=6)
+
+
 class MeOut(BaseModel):
     user: UserOut
     permissions: list[str]

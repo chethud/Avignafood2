@@ -108,6 +108,8 @@ function Invoices() {
   const [status, setStatus] = useState("all");
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [month, setMonth] = useState("all");
+  const [readyQ, setReadyQ] = useState("");
+  const [readyCredit, setReadyCredit] = useState("all");
   const raisedFromPopup = useRef<string | null>(null);
 
   async function load() {
@@ -139,6 +141,20 @@ function Invoices() {
       return `${i.number} ${i.customer_name || ""}`.toLowerCase().includes(needle);
     });
   }, [rows, q, status, overdueOnly, month]);
+
+  const readyVisible = useMemo(() => {
+    const needle = readyQ.trim().toLowerCase();
+    return orders.filter((o) => {
+      if (readyCredit === "ok" && !o.credit_ok) return false;
+      if (readyCredit === "exceeded" && o.credit_ok) return false;
+      if (!needle) return true;
+      return `${o.customer_name} ${o.company_name || ""} SO-${o.sales_order_id} ${o.ops_status} ${o.logistics_status || ""}`
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [orders, readyQ, readyCredit]);
+
+  const readyFiltersActive = Boolean(readyQ.trim()) || readyCredit !== "all";
 
   const draftEst = useMemo(() => {
     if (!draft) return 0;
@@ -286,9 +302,46 @@ function Invoices() {
         <Kpi label="Awaiting payment" value={String(open)} tone="warn" />
       </div>
 
-      <Panel title="Ready to invoice" hint="Owner approved — raise GST invoice first. Driver allotment happens after this on Order desk." className="mt-6">
+      <Panel
+        title="Ready to invoice"
+        hint={
+          readyFiltersActive
+            ? `Showing ${readyVisible.length} of ${orders.length}`
+            : "Owner approved — raise GST invoice first. Driver allotment happens after this on Order desk."
+        }
+        className="mt-6"
+      >
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <input
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2 lg:col-span-2"
+            placeholder="Search order, customer, company"
+            value={readyQ}
+            onChange={(e) => setReadyQ(e.target.value)}
+          />
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={readyCredit}
+            onChange={(e) => setReadyCredit(e.target.value)}
+          >
+            <option value="all">All credit</option>
+            <option value="ok">Within limit</option>
+            <option value="exceeded">Limit exceeded</option>
+          </select>
+        </div>
+        {readyFiltersActive && (
+          <button
+            type="button"
+            className="mb-3 text-sm text-primary hover:underline"
+            onClick={() => {
+              setReadyQ("");
+              setReadyCredit("all");
+            }}
+          >
+            Clear filters
+          </button>
+        )}
         <Table head={["Company", "Order", "Customer", "Lines", "Est. total", "Stage", "Credit", ""]}>
-          {orders.map((o) => (
+          {readyVisible.map((o) => (
             <tr key={o.sales_order_id}>
               <Td className="text-muted-foreground">{o.company_name || firmLabelByCompanyId(o.company_id)}</Td>
               <Td className="font-medium">SO-{o.sales_order_id}</Td>
@@ -307,8 +360,12 @@ function Invoices() {
             </tr>
           ))}
         </Table>
-        {!orders.length && (
-          <p className="mt-3 text-sm text-muted-foreground">No approved orders waiting to bill. Super Admin must approve a sales order first.</p>
+        {!readyVisible.length && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {orders.length
+              ? "No orders match this view."
+              : "No approved orders waiting to bill. Super Admin must approve a sales order first."}
+          </p>
         )}
       </Panel>
 

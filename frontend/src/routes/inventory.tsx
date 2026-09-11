@@ -288,6 +288,9 @@ function OpsInventory() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState("");
+  const [moveF, setMoveF] = useState("all");
+  const [whF, setWhF] = useState("all");
 
   const [productForm, setProductForm] = useState({
     sku: "",
@@ -505,6 +508,32 @@ function OpsInventory() {
   const total = useMemo(() => rows.reduce((a, s) => a + s.qty, 0), [rows]);
   const reserved = useMemo(() => rows.reduce((a, s) => a + s.reserved, 0), [rows]);
 
+  const warehousesInStock = useMemo(
+    () => [...new Set(rows.map((r) => r.warehouse).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [rows],
+  );
+
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((s) => {
+      if (whF !== "all" && s.warehouse !== whF) return false;
+      if (moveF === "slow" && !(s.age > 60)) return false;
+      if (moveF === "watch" && !(s.age > 40 && s.age <= 60)) return false;
+      if (moveF === "fast" && !(s.age > 0 && s.age <= 40)) return false;
+      if (moveF === "fresh" && s.age !== 0) return false;
+      if (!needle) return true;
+      return `${s.batch} ${s.product} ${s.manufacturer} ${s.warehouse} ${s.sku || ""}`.toLowerCase().includes(needle);
+    });
+  }, [rows, q, moveF, whF]);
+
+  const filtersActive = Boolean(q.trim()) || moveF !== "all" || whF !== "all";
+
+  function clearFilters() {
+    setQ("");
+    setMoveF("all");
+    setWhF("all");
+  }
+
   return (
     <>
       <PageHeader
@@ -544,9 +573,41 @@ function OpsInventory() {
         />
       </div>
 
-      <Panel title="Batch register" hint="Tap a row · details + history" className="mt-6">
+      <Panel
+        title="Batch register"
+        hint={filtersActive ? `Showing ${visible.length} of ${rows.length}` : "Tap a row · details + history"}
+        className="mt-6"
+      >
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <input
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2"
+            placeholder="Search batch, product, manufacturer"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={whF} onChange={(e) => setWhF(e.target.value)}>
+            <option value="all">All warehouses</option>
+            {warehousesInStock.map((w) => (
+              <option key={w} value={w}>
+                {w}
+              </option>
+            ))}
+          </select>
+          <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={moveF} onChange={(e) => setMoveF(e.target.value)}>
+            <option value="all">All movement</option>
+            <option value="fresh">Fresh</option>
+            <option value="fast">Fast moving</option>
+            <option value="watch">Watch ageing</option>
+            <option value="slow">Slow moving</option>
+          </select>
+        </div>
+        {filtersActive && (
+          <button type="button" className="mb-3 text-sm text-primary hover:underline" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
         <Table head={["Batch", "Product", "Manufacturer", "Warehouse", "On hand", "Reserved", "Available", "Age", "Movement"]}>
-          {rows.map((s) => {
+          {visible.map((s) => {
             const avail = s.qty - s.reserved;
             return (
               <tr
@@ -571,8 +632,10 @@ function OpsInventory() {
             );
           })}
         </Table>
-        {!rows.length && (
-          <p className="py-8 text-center text-sm text-muted-foreground">No stock yet — add a product, then record inbound.</p>
+        {!visible.length && (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            {rows.length ? "No batches match this view." : "No stock yet — add a product, then record inbound."}
+          </p>
         )}
       </Panel>
 

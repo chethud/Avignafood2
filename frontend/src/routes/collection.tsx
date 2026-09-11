@@ -44,6 +44,8 @@ function Collection() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [age, setAge] = useState<Age>("all");
+  const [q, setQ] = useState("");
+  const [statusF, setStatusF] = useState("all");
   const [picked, setPicked] = useState<Invoice | null>(null);
   const [follows, setFollows] = useState<FollowUp[]>([]);
   const [promised, setPromised] = useState("");
@@ -64,14 +66,27 @@ function Collection() {
   }, []);
 
   const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
     return invoices.filter((i) => {
       const days = daysOverdue(i.due_date);
-      if (age === "all") return true;
-      if (age === "0-30") return days <= 30;
-      if (age === "31-60") return days >= 31 && days <= 60;
-      return days >= 61;
+      if (age === "0-30" && !(days <= 30)) return false;
+      if (age === "31-60" && !(days >= 31 && days <= 60)) return false;
+      if (age === "61+" && !(days >= 61)) return false;
+      if (statusF === "overdue" && !(days > 0)) return false;
+      if (statusF === "current" && days > 0) return false;
+      if (statusF === "partial" && i.status !== "partial") return false;
+      if (!needle) return true;
+      return `${i.customer_name || ""} ${i.number} ${i.outstanding}`.toLowerCase().includes(needle);
     });
-  }, [invoices, age]);
+  }, [invoices, age, q, statusF]);
+
+  const filtersActive = Boolean(q.trim()) || age !== "all" || statusF !== "all";
+
+  function clearFilters() {
+    setQ("");
+    setAge("all");
+    setStatusF("all");
+  }
 
   const total = rows.reduce((s, i) => s + Number(i.outstanding), 0);
   const overdue = rows.filter((i) => daysOverdue(i.due_date) > 0).reduce((s, i) => s + Number(i.outstanding), 0);
@@ -126,27 +141,63 @@ function Collection() {
         </div>
       </div>
 
-      <div className="flex gap-1 overflow-x-auto">
-        {(
-          [
-            ["all", "All"],
-            ["0-30", "0-30 days"],
-            ["31-60", "31-60 days"],
-            ["61+", "61+ days"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setAge(id)}
-            className={cn(
-              "shrink-0 rounded-full px-3 py-1.5 text-sm",
-              age === id ? "bg-primary text-primary-foreground" : "border border-border",
-            )}
-          >
-            {label}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <input
+          className="rounded-xl border border-border bg-card px-3 py-2 text-sm sm:col-span-2"
+          placeholder="Search customer or invoice"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <select
+          className="rounded-xl border border-border bg-card px-3 py-2 text-sm"
+          value={statusF}
+          onChange={(e) => setStatusF(e.target.value)}
+        >
+          <option value="all">All statuses</option>
+          <option value="current">Current</option>
+          <option value="overdue">Overdue</option>
+          <option value="partial">Partially paid</option>
+        </select>
+        <select
+          className="rounded-xl border border-border bg-card px-3 py-2 text-sm"
+          value={age}
+          onChange={(e) => setAge(e.target.value as Age)}
+        >
+          <option value="all">All ageing</option>
+          <option value="0-30">0–30 days</option>
+          <option value="31-60">31–60 days</option>
+          <option value="61+">61+ days</option>
+        </select>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1 overflow-x-auto">
+          {(
+            [
+              ["all", "All"],
+              ["0-30", "0-30 days"],
+              ["31-60", "31-60 days"],
+              ["61+", "61+ days"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setAge(id)}
+              className={cn(
+                "shrink-0 rounded-full px-3 py-1.5 text-sm",
+                age === id ? "bg-primary text-primary-foreground" : "border border-border",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {filtersActive && (
+          <button type="button" className="text-sm text-primary hover:underline" onClick={clearFilters}>
+            Clear filters
           </button>
-        ))}
+        )}
       </div>
 
       <ul className="space-y-2">
@@ -173,7 +224,11 @@ function Collection() {
             </li>
           );
         })}
-        {!rows.length && <li className="py-8 text-center text-sm text-muted-foreground">No open collections.</li>}
+        {!rows.length && (
+          <li className="py-8 text-center text-sm text-muted-foreground">
+            {invoices.length ? "No collections match this view." : "No open collections."}
+          </li>
+        )}
       </ul>
 
       {picked && (

@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { money } from "@/lib/format";
@@ -13,16 +13,6 @@ export const Route = createFileRoute("/payments")({
   component: Payments,
 });
 
-type InvoiceRow = {
-  id: number;
-  company_id: number;
-  customer_id: number;
-  number: string;
-  customer_name: string | null;
-  outstanding: string | number;
-  status: string;
-};
-
 type PaymentRow = {
   id: number;
   invoice_id: number;
@@ -34,42 +24,18 @@ type PaymentRow = {
   paid_at: string;
 };
 
-const inputCls =
-  "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary";
-
 function Payments() {
   const { firm } = useCompany();
-  const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<"invoice" | "allocate" | null>(null);
-  const [form, setForm] = useState({
-    invoice_id: "",
-    customer_id: "",
-    amount: "",
-    method: "neft",
-    reference: "",
-    paid_at: new Date().toISOString().slice(0, 10),
-  });
-
-  const open = useMemo(
-    () => invoices.filter((i) => i.status === "open" || i.status === "partial"),
-    [invoices],
-  );
-  const customers = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const i of open) map.set(i.customer_id, i.customer_name || `Customer ${i.customer_id}`);
-    return [...map.entries()].map(([id, name]) => ({ id, name }));
-  }, [open]);
+  const [q, setQ] = useState("");
+  const [modeF, setModeF] = useState("all");
+  const [periodF, setPeriodF] = useState("all");
+  const [customerF, setCustomerF] = useState("all");
 
   async function load() {
     try {
-      const [inv, pay] = await Promise.all([
-        api<InvoiceRow[]>("/api/v1/invoices"),
-        api<PaymentRow[]>("/api/v1/payments"),
-      ]);
-      setInvoices(inv);
+      const pay = await api<PaymentRow[]>("/api/v1/payments");
       setRows(pay);
       setError("");
     } catch (e) {
@@ -81,129 +47,123 @@ function Payments() {
     void load();
   }, [firm]);
 
-  const collected = rows.reduce((a, p) => a + Number(p.amount || 0), 0);
   const todayIso = new Date().toISOString().slice(0, 10);
-  const todayAmt = rows.filter((p) => p.paid_at === todayIso).reduce((a, p) => a + Number(p.amount || 0), 0);
+  const monthPrefix = todayIso.slice(0, 7);
 
-  async function saveInvoicePay(e: React.FormEvent) {
-    e.preventDefault();
-    const amount = Number(form.amount);
-    const inv = open.find((i) => String(i.id) === form.invoice_id);
-    if (!(amount > 0) || !inv) {
-      setError("Choose an invoice and enter a positive amount");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api("/api/v1/payments", {
-        method: "POST",
-        companyId: inv.company_id,
-        body: JSON.stringify({
-          invoice_id: inv.id,
-          amount,
-          method: form.method,
-          reference: form.reference.trim() || null,
-          paid_at: form.paid_at || null,
-        }),
-      });
-      setMode(null);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not record payment");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const customers = useMemo(() => {
+    const names = [...new Set(rows.map((p) => p.customer_name || "").filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    return names;
+  }, [rows]);
 
-  async function saveAllocate(e: React.FormEvent) {
-    e.preventDefault();
-    const amount = Number(form.amount);
-    const sample = open.find((i) => String(i.customer_id) === form.customer_id);
-    if (!(amount > 0) || !sample) {
-      setError("Choose a customer and enter a positive amount");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api("/api/v1/accounts/allocate", {
-        method: "POST",
-        companyId: sample.company_id,
-        body: JSON.stringify({
-          customer_id: sample.customer_id,
-          amount,
-          method: form.method,
-          reference: form.reference.trim() || null,
-          paid_at: form.paid_at || null,
-        }),
-      });
-      setMode(null);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not allocate payment");
-    } finally {
-      setBusy(false);
-    }
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((p) => {
+      if (modeF !== "all" && p.method !== modeF) return false;
+      if (periodF === "today" && String(p.paid_at).slice(0, 10) !== todayIso) return false;
+      if (periodF === "month" && !String(p.paid_at).startsWith(monthPrefix)) return false;
+      if (customerF !== "all" && (p.customer_name || "") !== customerF) return false;
+      if (!needle) return true;
+      return `${p.paid_at} ${p.customer_name || ""} ${p.invoice_number || ""} ${p.invoice_id} ${p.method} ${p.reference || ""} ${p.amount}`
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [rows, q, modeF, periodF, customerF, todayIso, monthPrefix]);
+
+  const filtersActive = Boolean(q.trim()) || modeF !== "all" || periodF !== "all" || customerF !== "all";
+
+  const collected = rows.reduce((a, p) => a + Number(p.amount || 0), 0);
+  const todayAmt = rows.filter((p) => String(p.paid_at).slice(0, 10) === todayIso).reduce((a, p) => a + Number(p.amount || 0), 0);
+  const filteredAmt = visible.reduce((a, p) => a + Number(p.amount || 0), 0);
+
+  function clearFilters() {
+    setQ("");
+    setModeF("all");
+    setPeriodF("all");
+    setCustomerF("all");
   }
 
   return (
     <>
       <PageHeader
         title="Payments"
-        subtitle="Record receipts (NEFT, UPI, cheque, cash, adjustment) and allocate them to invoices. The original invoice amount is never overwritten."
+        subtitle="All receipts recorded against invoices. To collect or allocate against outstanding, use Receivables."
         action={
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded-lg border border-border px-3 py-2 text-sm"
-              onClick={() => {
-                setError("");
-                setForm((f) => ({
-                  ...f,
-                  invoice_id: open[0] ? String(open[0].id) : "",
-                  amount: open[0] ? String(open[0].outstanding) : "",
-                  method: "neft",
-                  reference: "",
-                  paid_at: todayIso,
-                }));
-                setMode("invoice");
-              }}
-            >
-              Record payment
-            </button>
-            <button
-              type="button"
-              className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
-              onClick={() => {
-                setError("");
-                setForm((f) => ({
-                  ...f,
-                  customer_id: customers[0] ? String(customers[0].id) : "",
-                  amount: "",
-                  method: "neft",
-                  reference: "",
-                  paid_at: todayIso,
-                }));
-                setMode("allocate");
-              }}
-            >
-              Allocate
-            </button>
-          </div>
+          <Link to="/receivables" className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
+            Open receivables
+          </Link>
         }
       />
-      {error && !mode && <p className="mb-3 text-sm text-destructive">{error}</p>}
+      {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Kpi label="Today" value={money(todayAmt)} />
         <Kpi label="All receipts" value={money(collected)} meta={`${rows.length} entries`} />
-        <Kpi label="Open invoices" value={String(open.length)} tone={open.length ? "warn" : "good"} />
+        <Kpi label="Register" value="View only" meta="Update on Receivables" />
       </div>
 
-      <Panel title="Payment register" hint="Invoice ↔ payment linkage" className="mt-6">
+      <Panel
+        title="Payment register"
+        hint={
+          filtersActive
+            ? `Showing ${visible.length} of ${rows.length} · ${money(filteredAmt)}`
+            : "Every received payment · newest first"
+        }
+        className="mt-6"
+      >
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          <input
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2 lg:col-span-2"
+            placeholder="Search customer, invoice, reference, amount"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={periodF}
+            onChange={(e) => setPeriodF(e.target.value)}
+          >
+            <option value="all">All dates</option>
+            <option value="today">Today</option>
+            <option value="month">This month</option>
+          </select>
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={modeF}
+            onChange={(e) => setModeF(e.target.value)}
+          >
+            <option value="all">All modes</option>
+            {PAY_MODES.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={customerF}
+            onChange={(e) => setCustomerF(e.target.value)}
+          >
+            <option value="all">All customers</option>
+            {customers.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {filtersActive ? (
+            <button type="button" className="text-sm text-primary hover:underline" onClick={clearFilters}>
+              Clear filters
+            </button>
+          ) : (
+            <span className="text-sm text-muted-foreground">{rows.length} receipt(s)</span>
+          )}
+        </div>
         <Table head={["Date", "Customer", "Invoice", "Amount", "Mode", "Reference"]}>
-          {rows.map((p) => (
+          {visible.map((p) => (
             <tr key={p.id}>
               <Td className="text-muted-foreground">{p.paid_at}</Td>
               <Td>{p.customer_name || "—"}</Td>
@@ -214,111 +174,12 @@ function Payments() {
             </tr>
           ))}
         </Table>
-        {!rows.length && <p className="mt-3 text-sm text-muted-foreground">No payments recorded yet.</p>}
+        {!visible.length && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {rows.length ? "No payments match this view." : "No payments recorded yet."}
+          </p>
+        )}
       </Panel>
-
-      {mode && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={() => setMode(null)} />
-          <form
-            onSubmit={(e) => void (mode === "allocate" ? saveAllocate(e) : saveInvoicePay(e))}
-            className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl"
-          >
-            <h2 className="text-lg font-semibold">{mode === "allocate" ? "Allocate payment" : "Record payment"}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {mode === "allocate" ? "FIFO across the customer’s open invoices." : "Apply to one invoice. Partial receipts stay partially paid."}
-            </p>
-            <div className="mt-4 space-y-3">
-              {mode === "allocate" ? (
-                <label className="block text-sm text-muted-foreground">
-                  Customer
-                  <select
-                    required
-                    className={inputCls}
-                    value={form.customer_id}
-                    onChange={(e) => setForm((f) => ({ ...f, customer_id: e.target.value }))}
-                  >
-                    <option value="">Select</option>
-                    {customers.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : (
-                <label className="block text-sm text-muted-foreground">
-                  Invoice
-                  <select
-                    required
-                    className={inputCls}
-                    value={form.invoice_id}
-                    onChange={(e) => {
-                      const inv = open.find((i) => String(i.id) === e.target.value);
-                      setForm((f) => ({
-                        ...f,
-                        invoice_id: e.target.value,
-                        amount: inv ? String(inv.outstanding) : f.amount,
-                      }));
-                    }}
-                  >
-                    <option value="">Select</option>
-                    {open.map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {i.number} · {i.customer_name} · {money(i.outstanding)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              <label className="block text-sm text-muted-foreground">
-                Amount
-                <input
-                  required
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  className={inputCls}
-                  value={form.amount}
-                  onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
-                />
-              </label>
-              <label className="block text-sm text-muted-foreground">
-                Mode
-                <select className={inputCls} value={form.method} onChange={(e) => setForm((f) => ({ ...f, method: e.target.value }))}>
-                  {PAY_MODES.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-sm text-muted-foreground">
-                Reference
-                <input
-                  className={inputCls}
-                  value={form.reference}
-                  onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))}
-                  placeholder="NEFT123456 / UTR / cheque no."
-                />
-              </label>
-              <label className="block text-sm text-muted-foreground">
-                Date
-                <input type="date" className={inputCls} value={form.paid_at} onChange={(e) => setForm((f) => ({ ...f, paid_at: e.target.value }))} />
-              </label>
-            </div>
-            {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-            <div className="mt-5 grid grid-cols-2 gap-2">
-              <button type="submit" disabled={busy} className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">
-                {busy ? "Saving…" : "Save"}
-              </button>
-              <button type="button" onClick={() => setMode(null)} className="rounded-lg border border-border py-2.5 text-sm">
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
     </>
   );
 }

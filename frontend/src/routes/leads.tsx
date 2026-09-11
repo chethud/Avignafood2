@@ -434,14 +434,14 @@ function LeadsDesk() {
             type="button"
             onClick={() => setStage("all")}
             className={cn(
-              "flex flex-col items-center justify-center gap-0.5 border-b-2 px-1 py-3.5 transition-colors sm:py-4",
+              "flex flex-col items-center justify-center gap-0 border-b-2 px-1 py-1.5 transition-colors sm:py-2",
               stage === "all"
                 ? "border-primary bg-primary-soft/30 text-foreground"
                 : "border-transparent text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
             )}
           >
-            <span className="text-[0.65rem] font-medium uppercase tracking-[0.08em] sm:text-xs">All</span>
-            <span className="text-xl font-semibold tabular-nums leading-none sm:text-2xl">{total}</span>
+            <span className="text-[0.6rem] font-medium uppercase tracking-[0.06em]">All</span>
+            <span className="text-sm font-semibold tabular-nums leading-tight sm:text-base">{total}</span>
           </button>
           {stageCounts.map((s) => (
             <button
@@ -449,14 +449,14 @@ function LeadsDesk() {
               type="button"
               onClick={() => setStage(stage === s.key ? "all" : s.key)}
               className={cn(
-                "flex flex-col items-center justify-center gap-0.5 border-b-2 px-1 py-3.5 transition-colors sm:py-4",
+                "flex flex-col items-center justify-center gap-0 border-b-2 px-1 py-1.5 transition-colors sm:py-2",
                 stage === s.key
                   ? "border-primary bg-primary-soft/30 text-foreground"
                   : "border-transparent text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
               )}
             >
-              <span className="text-[0.65rem] font-medium uppercase tracking-[0.08em] sm:text-xs">{s.label}</span>
-              <span className="text-xl font-semibold tabular-nums leading-none sm:text-2xl">{s.n}</span>
+              <span className="text-[0.6rem] font-medium uppercase tracking-[0.06em]">{s.label}</span>
+              <span className="text-sm font-semibold tabular-nums leading-tight sm:text-base">{s.n}</span>
             </button>
           ))}
         </div>
