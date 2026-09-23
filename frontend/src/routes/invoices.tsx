@@ -1,11 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { api } from "@/lib/api";
+import { api, mediaUrl } from "@/lib/api";
 import { money, waHref } from "@/lib/format";
 import { firms } from "@/lib/erp-data";
 import { useCompany } from "@/lib/company-context";
 import { dueCountdown, payStatus, payStatusLabel } from "@/lib/accounts";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
+import { buildInvoicePdfBlob, downloadPdfBlob } from "@/lib/invoice-pdf";
 
 export const Route = createFileRoute("/invoices")({
   head: () => ({
@@ -52,6 +53,7 @@ type BillableOrder = {
 
 type InvoiceRow = {
   id: number;
+  company_id?: number;
   number: string;
   customer_name: string | null;
   invoice_date: string;
@@ -107,13 +109,14 @@ function Invoices() {
   const { firm } = useCompany();
   const company = firms.find((f) => f.id === firm);
   const [inbox, setInbox] = useState<Billable[]>([]);
-  const [billable, setBillable] = useState<Billable[]>([]);
   const [orders, setOrders] = useState<BillableOrder[]>([]);
   const [rows, setRows] = useState<InvoiceRow[]>([]);
   const [selected, setSelected] = useState<Billable | null>(null);
   const [pickOrder, setPickOrder] = useState<BillableOrder | null>(null);
   const [draft, setDraft] = useState<InvoiceDraft | null>(null);
   const [printInv, setPrintInv] = useState<InvoiceRow | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");
@@ -123,14 +126,12 @@ function Invoices() {
 
   async function load() {
     try {
-      const [notice, ready, issued, soReady] = await Promise.all([
+      const [notice, issued, soReady] = await Promise.all([
         api<Billable[]>("/api/v1/invoices/dispatch-inbox"),
-        api<Billable[]>("/api/v1/invoices/billable"),
         api<InvoiceRow[]>("/api/v1/invoices"),
         api<BillableOrder[]>("/api/v1/invoices/billable-orders").catch(() => [] as BillableOrder[]),
       ]);
       setInbox(notice);
-      setBillable(ready);
       setRows(issued);
       setOrders(soReady);
       setError("");
@@ -273,11 +274,83 @@ function Invoices() {
     }
   }
 
-  async function openPrint(row: InvoiceRow) {
+  async function loadInvoiceDetail(row: InvoiceRow) {
     try {
-      setPrintInv(await api<InvoiceRow>(`/api/v1/invoices/${row.id}`));
+      return await api<InvoiceRow>(`/api/v1/invoices/${row.id}`, {
+        companyId: row.company_id,
+      });
     } catch {
-      setPrintInv(row);
+      return row;
+    }
+  }
+
+  function closePdfViewer() {
+    setPrintInv(null);
+    setPdfUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }
+
+  async function makePdf(detail: InvoiceRow) {
+    const firmMeta =
+      firms.find((f) => f.companyId === detail.company_id) ||
+      firms.find((f) => f.id === firm) ||
+      company;
+    let name = firmMeta?.name;
+    let gst = firmMeta?.gst ?? null;
+    let logoUrl: string | null = firmMeta && "logo" in firmMeta ? firmMeta.logo : null;
+    try {
+      type Co = {
+        id: number;
+        legal_name?: string;
+        trade_name?: string | null;
+        gstin?: string | null;
+        logo_url?: string | null;
+      };
+      const cos = await api<Co[]>("/api/v1/companies", { companyId: detail.company_id });
+      const co = cos.find((c) => c.id === detail.company_id) || cos[0];
+      if (co) {
+        name = co.trade_name || co.legal_name || name;
+        gst = co.gstin || gst;
+        if (co.logo_url) logoUrl = mediaUrl(co.logo_url) || co.logo_url;
+      }
+    } catch {
+      /* use firm seed logo */
+    }
+    return buildInvoicePdfBlob(detail, { name, gst, logoUrl });
+  }
+
+  async function previewInvoice(row: InvoiceRow) {
+    setError("");
+    setPdfBusy(true);
+    try {
+      const detail = await loadInvoiceDetail(row);
+      const blob = await makePdf(detail);
+      const url = URL.createObjectURL(blob);
+      setPdfUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+      setPrintInv(detail);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not build PDF");
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
+  async function downloadInvoicePdf(row: InvoiceRow) {
+    setError("");
+    setPdfBusy(true);
+    try {
+      const detail = await loadInvoiceDetail(row);
+      const blob = await makePdf(detail);
+      downloadPdfBlob(blob, `${detail.number || "invoice"}.pdf`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not download PDF");
+    } finally {
+      setPdfBusy(false);
     }
   }
   const invoiced = rows.reduce((a, i) => a + Number(i.total || 0), 0);
@@ -293,7 +366,7 @@ function Invoices() {
 
       <div className="grid gap-4 sm:grid-cols-4">
         <Kpi label="Dispatch inbox" value={String(inbox.length)} meta="Loads Accounts can see" />
-        <Kpi label="Ready to invoice" value={String(orders.length || billable.length)} tone={(orders.length || billable.length) ? "warn" : "good"} meta="Approved orders" />
+        <Kpi label="Ready to invoice" value={String(orders.length)} tone={orders.length ? "warn" : "good"} meta="Approved orders" />
         <Kpi label="Invoiced" value={money(invoiced)} meta={`${rows.length} documents`} />
         <Kpi label="Awaiting payment" value={String(open)} tone="warn" />
       </div>
@@ -353,32 +426,6 @@ function Invoices() {
         {!inbox.length && <p className="mt-3 text-sm text-muted-foreground">No dispatch loads yet. They appear here when supervisor / logistics books a movement.</p>}
       </Panel>
 
-      {billable.length > 0 && (
-      <Panel title="Dispatch-level billing" hint="Fallback when a load has no sales order. Prefer Ready to invoice above." className="mt-6">
-        <Table head={["Customer", "Product", "Qty", "Est. value", "Stage", "Vehicle / LR", ""]}>
-          {billable.map((b) => (
-            <tr key={b.dispatch_id} className="cursor-pointer hover:bg-secondary/50" onClick={() => setSelected(b)}>
-              <Td className="font-medium">{b.customer_name}</Td>
-              <Td className="text-muted-foreground">{b.product}</Td>
-              <Td className="tabular-nums">{Number(b.quantity)}</Td>
-              <Td className="tabular-nums">{money(b.estimated_total)}</Td>
-              <Td>
-                <Badge tone={b.dispatch_status === "Delivered" ? "good" : "warn"}>{b.dispatch_status}</Badge>
-              </Td>
-              <Td className="text-muted-foreground text-xs">
-                {[b.vehicle, b.lr].filter(Boolean).join(" · ") || "—"}
-              </Td>
-              <Td>
-                <button type="button" className="text-sm text-primary hover:underline" onClick={(e) => { e.stopPropagation(); setSelected(b); }}>
-                  Invoice
-                </button>
-              </Td>
-            </tr>
-          ))}
-        </Table>
-      </Panel>
-      )}
-
       <Panel title="Issued invoices" hint="Invoice ↔ sales order ↔ dispatch. Filters stay on this company." className="mt-6">
         <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           <input
@@ -427,7 +474,20 @@ function Invoices() {
               </Td>
               <Td>
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" className="text-sm text-primary hover:underline" onClick={() => void openPrint(i)}>
+                  <button
+                    type="button"
+                    disabled={pdfBusy}
+                    className="text-sm text-primary hover:underline disabled:opacity-60"
+                    onClick={() => void previewInvoice(i)}
+                  >
+                    Preview
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pdfBusy}
+                    className="text-sm text-primary hover:underline disabled:opacity-60"
+                    onClick={() => void downloadInvoicePdf(i)}
+                  >
                     PDF
                   </button>
                   {i.phone ? (
@@ -649,66 +709,37 @@ function Invoices() {
         </div>
       )}
 
-      {printInv && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4 print:static print:inset-auto print:p-0">
-          <button type="button" className="absolute inset-0 bg-foreground/40 print:hidden" aria-label="Close" onClick={() => setPrintInv(null)} />
-          <div id="invoice-print" className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-lg sm:rounded-2xl print:max-h-none print:max-w-none print:overflow-visible print:rounded-none print:border-0 print:p-8">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">{company?.name || "Avighna Foods"}</p>
-            <h2 className="text-lg font-semibold">Tax Invoice {printInv.number}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              GSTIN {company?.gst || "—"} · Invoice {printInv.invoice_date} · Due {printInv.due_date || "—"}
-              {printInv.sales_order_id ? ` · SO-${printInv.sales_order_id}` : ""}
-            </p>
-            <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
+      {printInv && pdfUrl && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
+          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={closePdfViewer} />
+          <div className="relative z-10 flex h-[92dvh] w-full max-w-4xl flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-[var(--shadow-soft)] sm:rounded-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
               <div>
-                <dt className="text-muted-foreground">Bill to</dt>
-                <dd className="font-medium">{printInv.customer_name}</dd>
-                <dd>{printInv.gstin || ""}</dd>
-                <dd className="text-muted-foreground">{printInv.billing_address || printInv.address || ""}</dd>
+                <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">PDF preview</p>
+                <p className="text-sm font-semibold">
+                  {printInv.number} · {printInv.customer_name || "Invoice"}
+                </p>
               </div>
-              <div>
-                <dt className="text-muted-foreground">Ship to</dt>
-                <dd>{printInv.shipping_address || printInv.address || "—"}</dd>
-                <dd className="text-muted-foreground">{printInv.credit_days ?? 30} day credit</dd>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={pdfBusy}
+                  className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+                  onClick={() => {
+                    if (!printInv) return;
+                    void makePdf(printInv).then((blob) =>
+                      downloadPdfBlob(blob, `${printInv.number || "invoice"}.pdf`),
+                    );
+                  }}
+                >
+                  Download PDF
+                </button>
+                <button type="button" onClick={closePdfViewer} className="rounded-lg border border-border px-3 py-2 text-sm">
+                  Close
+                </button>
               </div>
-            </dl>
-            <table className="mt-4 w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-muted-foreground">
-                  <th className="py-1">Product</th>
-                  <th className="py-1 text-right">Qty</th>
-                  <th className="py-1 text-right">Rate</th>
-                  <th className="py-1 text-right">GST</th>
-                  <th className="py-1 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(printInv.lines || []).map((ln, idx) => (
-                  <tr key={idx} className="border-b border-border/60">
-                    <td className="py-1">{ln.product_name || "Item"}</td>
-                    <td className="py-1 text-right tabular-nums">{ln.quantity}</td>
-                    <td className="py-1 text-right tabular-nums">{money(ln.unit_price)}</td>
-                    <td className="py-1 text-right tabular-nums">{ln.gst_rate}%</td>
-                    <td className="py-1 text-right tabular-nums">{money(ln.line_total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <dl className="mt-4 ml-auto w-56 space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">Taxable</dt><dd className="tabular-nums">{money(printInv.subtotal || 0)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">CGST</dt><dd className="tabular-nums">{money(printInv.cgst || 0)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">SGST</dt><dd className="tabular-nums">{money(printInv.sgst || 0)}</dd></div>
-              <div className="flex justify-between font-medium"><dt>Grand total</dt><dd className="tabular-nums">{money(printInv.total)}</dd></div>
-            </dl>
-            <p className="mt-4 text-xs text-muted-foreground">Pay by bank transfer / UPI / cheque. Outstanding {money(printInv.outstanding)}.</p>
-            <div className="mt-5 grid grid-cols-2 gap-2 print:hidden">
-              <button type="button" onClick={() => window.print()} className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground">
-                Print / PDF
-              </button>
-              <button type="button" onClick={() => setPrintInv(null)} className="rounded-lg border border-border py-2.5 text-sm">
-                Close
-              </button>
             </div>
+            <iframe title={`Invoice ${printInv.number}`} src={pdfUrl} className="min-h-0 w-full flex-1 bg-secondary/30" />
           </div>
         </div>
       )}

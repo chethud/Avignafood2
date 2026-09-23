@@ -55,7 +55,7 @@ type DeskOrder = {
 
 type Filter = "all" | "pending_vehicle" | "ready" | "shortage" | "procuring" | "allocated";
 
-type AllotDraft = { date: string; slot: SlotKey; vehicleId: number | "" };
+type AllotDraft = { date: string; slot: SlotKey | ""; vehicleId: number | "" };
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
@@ -114,9 +114,9 @@ function OrderDesk() {
   function draftFor(so: DeskOrder): AllotDraft {
     return (
       drafts[so.id] || {
-        date: so.slot_date || todayIso(),
-        slot: (so.slot as SlotKey) || "morning",
-        vehicleId: so.planned_vehicle_id ?? fleet[0]?.vehicle_id ?? "",
+        date: "",
+        slot: "",
+        vehicleId: "",
       }
     );
   }
@@ -124,9 +124,9 @@ function OrderDesk() {
   function patchDraft(soId: number, patch: Partial<AllotDraft>) {
     setDrafts((prev) => {
       const base = prev[soId] || {
-        date: todayIso(),
-        slot: "morning" as SlotKey,
-        vehicleId: fleet[0]?.vehicle_id ?? ("" as const),
+        date: "",
+        slot: "" as const,
+        vehicleId: "" as const,
       };
       return { ...prev, [soId]: { ...base, ...patch } };
     });
@@ -263,10 +263,12 @@ function OrderDesk() {
         {visible.map((so) => {
           const draft = draftFor(so);
           const selected = fleet.find((v) => v.vehicle_id === draft.vehicleId);
-          const slotFree = selected ? selected[draft.slot] === "free" : false;
+          const slotFree =
+            selected && draft.slot ? selected[draft.slot] === "free" : false;
           const canBook = so.ops_status === "ready" || so.ops_status === "pending_verify";
           const needsVehicle = so.ops_status === "pending_vehicle_confirm";
           const hasSalesPlan = Boolean(so.planned_vehicle_id || so.vehicle);
+          const allotReady = Boolean(draft.date && draft.slot && draft.vehicleId);
 
           return (
             <Panel
@@ -335,12 +337,12 @@ function OrderDesk() {
                         Vehicle / driver
                         <select
                           className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                          value={draft.vehicleId}
+                          value={draft.vehicleId === "" ? "" : String(draft.vehicleId)}
                           onChange={(e) =>
                             patchDraft(so.id, { vehicleId: e.target.value ? Number(e.target.value) : "" })
                           }
                         >
-                          {!fleet.length && <option value="">No vehicles</option>}
+                          <option value="">{fleet.length ? "Select vehicle" : "No vehicles"}</option>
                           {fleet.map((v) => (
                             <option key={v.vehicle_id} value={v.vehicle_id}>
                               {v.name} · {v.plate}
@@ -351,13 +353,13 @@ function OrderDesk() {
                       </label>
                       <button
                         type="button"
-                        disabled={busy === `cv-${so.id}` || (!hasSalesPlan && !draft.vehicleId)}
+                        disabled={busy === `cv-${so.id}` || !draft.vehicleId}
                         onClick={() =>
                           run(`cv-${so.id}`, () =>
                             api(`/api/v1/sales-orders/${so.id}/confirm-vehicle`, {
                               method: "POST",
                               body: JSON.stringify({
-                                vehicle_id: draft.vehicleId || so.planned_vehicle_id || null,
+                                vehicle_id: draft.vehicleId || null,
                               }),
                             }).then(() => undefined),
                           )
@@ -497,7 +499,7 @@ function OrderDesk() {
                         value={draft.date}
                         onChange={(e) => {
                           patchDraft(so.id, { date: e.target.value });
-                          void loadFleet(e.target.value);
+                          if (e.target.value) void loadFleet(e.target.value);
                         }}
                       />
                     </label>
@@ -506,8 +508,9 @@ function OrderDesk() {
                       <select
                         className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                         value={draft.slot}
-                        onChange={(e) => patchDraft(so.id, { slot: e.target.value as SlotKey })}
+                        onChange={(e) => patchDraft(so.id, { slot: e.target.value as SlotKey | "" })}
                       >
+                        <option value="">Select window</option>
                         {SLOTS.map((s) => (
                           <option key={s.key} value={s.key}>
                             {s.label}
@@ -519,20 +522,21 @@ function OrderDesk() {
                       Vehicle / driver
                       <select
                         className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                        value={draft.vehicleId}
+                        value={draft.vehicleId === "" ? "" : String(draft.vehicleId)}
                         onChange={(e) => patchDraft(so.id, { vehicleId: e.target.value ? Number(e.target.value) : "" })}
                       >
-                        {!fleet.length && <option value="">No vehicles</option>}
+                        <option value="">{fleet.length ? "Select vehicle" : "No vehicles"}</option>
                         {fleet.map((v) => (
                           <option key={v.vehicle_id} value={v.vehicle_id}>
                             {v.name} · {v.plate}
-                            {v.driver_name ? ` · ${v.driver_name}` : ""} · {v[draft.slot]}
+                            {v.driver_name ? ` · ${v.driver_name}` : ""}
+                            {draft.slot ? ` · ${v[draft.slot]}` : ""}
                           </option>
                         ))}
                       </select>
                     </label>
                   </div>
-                  {selected && (
+                  {selected && draft.slot && draft.date && (
                     <p className="text-xs text-muted-foreground">
                       {draft.slot} on {draft.date}:{" "}
                       <span className={slotFree ? "text-success" : "text-destructive"}>
@@ -543,7 +547,7 @@ function OrderDesk() {
                   )}
                   <button
                     type="button"
-                    disabled={busy === `a-${so.id}` || !draft.vehicleId}
+                    disabled={busy === `a-${so.id}` || !allotReady}
                     onClick={() =>
                       run(`a-${so.id}`, () =>
                         api(`/api/v1/sales-orders/${so.id}/allocate`, {
@@ -576,9 +580,10 @@ function OrderDesk() {
                       Change vehicle
                       <select
                         className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                        value={draft.vehicleId}
+                        value={draft.vehicleId === "" ? "" : String(draft.vehicleId)}
                         onChange={(e) => patchDraft(so.id, { vehicleId: e.target.value ? Number(e.target.value) : "" })}
                       >
+                        <option value="">{fleet.length ? "Select vehicle" : "No vehicles"}</option>
                         {fleet.map((v) => (
                           <option key={v.vehicle_id} value={v.vehicle_id}>
                             {v.name} · {v.plate}
