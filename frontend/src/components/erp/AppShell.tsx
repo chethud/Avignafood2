@@ -183,6 +183,10 @@ const navByRole: Record<string, NavSection[]> = {
   ],
 };
 
+const FALLBACK_NAV: NavSection[] = [
+  { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard }] },
+];
+
 function flattenNav(sections: NavSection[]): NavItem[] {
   return sections.flatMap((s) => s.items);
 }
@@ -480,9 +484,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const role = me?.user.role || "";
   const roleLabel = role.replaceAll("_", " ") || (loading ? "…" : "Signed in");
   // Unknown / loading → dashboard only (never fall through to owner/admin nav)
-  const activeNav =
-    navByRole[role] ??
-    [{ group: "Overview", items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard }] }];
+  const activeNav = navByRole[role] ?? FALLBACK_NAV;
   const flat = flattenNav(activeNav);
   const bottomTabs = flat.slice(0, 4);
   const alerts = quietAlerts(firm).filter((a) => pathAllowed(a.to, activeNav));
@@ -496,7 +498,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (loading || !me) return;
     if (pathname === "/login") return;
     if (!pathAllowed(pathname, activeNav)) navigate({ to: "/" });
-  }, [loading, me, pathname, activeNav, navigate]);
+  }, [loading, me, pathname, role, navigate]);
+
 
   if (loading) {
     return <div className="min-h-dvh bg-background" />;

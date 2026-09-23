@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { X } from "lucide-react";
 import { useMe } from "@/lib/me-context";
@@ -13,14 +13,18 @@ import { cn } from "@/lib/utils";
 
 type Box = { top: number; left: number; width: number; height: number };
 
-function measure(target: string): Box | null {
+function boxesEqual(a: Box | null, b: Box | null) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height;
+}
+
+function measure(target: string, scroll: boolean): Box | null {
   const el =
     (document.querySelector(`[data-tour="${target}"]`) as HTMLElement | null) ||
-    (target === "page-guide"
-      ? (document.querySelector("main") as HTMLElement | null)
-      : null);
+    (target === "page-guide" ? (document.querySelector("main") as HTMLElement | null) : null);
   if (!el) return null;
-  el.scrollIntoView({ block: "nearest", behavior: "smooth", inline: "nearest" });
+  if (scroll) el.scrollIntoView({ block: "nearest", behavior: "auto", inline: "nearest" });
   const r = el.getBoundingClientRect();
   const pad = 8;
   return {
@@ -38,6 +42,7 @@ export function ProductTour() {
   const [state, setState] = useState<TourState | null>(() => readTour());
   const [box, setBox] = useState<Box | null>(null);
   const [missing, setMissing] = useState(false);
+  const scrolledFor = useRef<string>("");
 
   useEffect(() => {
     const sync = () => setState(readTour());
@@ -49,49 +54,59 @@ export function ProductTour() {
     };
   }, []);
 
-  const steps = tourStepsFor(state?.role || me?.user.role);
-  const step = state ? steps[state.step] : null;
+  const roleKey = (state?.role || me?.user.role || "sales").toLowerCase();
+  const steps = useMemo(() => tourStepsFor(roleKey), [roleKey]);
   const index = state?.step ?? 0;
-  const stepKey = state ? `${state.role}:${state.step}:${step?.route || ""}` : "";
+  const step = state ? steps[index] : null;
+  const stepKey = state && step ? `${state.role}:${index}:${step.route}:${step.target}` : "";
 
-  // Navigate when the tour step changes (not on every user navigation race)
+  // Navigate only when the tour step identity changes
   useEffect(() => {
-    if (!state || !step) return;
+    if (!step) return;
     if (pathname === step.route) return;
     void navigate({ to: step.route });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when step identity changes
-  }, [stepKey]);
+  }, [stepKey, step, pathname, navigate]);
 
   useLayoutEffect(() => {
     if (!state || !step) {
-      setBox(null);
+      setBox((prev) => (prev === null ? prev : null));
+      setMissing(false);
+      scrolledFor.current = "";
       return;
     }
+
     let tries = 0;
     let timer: number | undefined;
+    const apply = (next: Box | null, isMissing: boolean) => {
+      setBox((prev) => (boxesEqual(prev, next) ? prev : next));
+      setMissing(isMissing);
+    };
+
     const tick = () => {
       if (pathname !== step.route) {
         timer = window.setTimeout(tick, 120);
         return;
       }
-      const next = measure(step.target);
+      const shouldScroll = scrolledFor.current !== stepKey;
+      const next = measure(step.target, shouldScroll);
+      if (shouldScroll) scrolledFor.current = stepKey;
       if (next) {
-        setBox(next);
-        setMissing(false);
+        apply(next, false);
         return;
       }
       tries += 1;
       if (tries < 25) {
         timer = window.setTimeout(tick, 120);
       } else {
-        setBox(null);
-        setMissing(true);
+        apply(null, true);
       }
     };
     tick();
+
     const onResize = () => {
-      const next = measure(step.target);
-      if (next) setBox(next);
+      if (pathname !== step.route) return;
+      const next = measure(step.target, false);
+      if (next) apply(next, false);
     };
     window.addEventListener("resize", onResize);
     window.addEventListener("scroll", onResize, true);
@@ -100,7 +115,7 @@ export function ProductTour() {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("scroll", onResize, true);
     };
-  }, [state, step, pathname, index]);
+  }, [state, stepKey, step, pathname]);
 
   if (!state || !step) return null;
 
@@ -126,7 +141,6 @@ export function ProductTour() {
 
   return (
     <div className="pointer-events-none fixed inset-0 z-[70]">
-      {/* dim + hole */}
       <svg className="pointer-events-auto absolute inset-0 h-full w-full" aria-hidden>
         <defs>
           <mask id="tour-mask">
