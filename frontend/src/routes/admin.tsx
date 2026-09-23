@@ -16,7 +16,16 @@ export const Route = createFileRoute("/admin")({
   component: Admin,
 });
 
-type Tab = "companies" | "users" | "roles" | "audit";
+type Tab = "companies" | "users" | "fleet" | "roles" | "audit";
+
+type FleetVehicle = {
+  id: number;
+  name: string;
+  plate: string;
+  kind: string;
+  driver_name: string | null;
+  live_status: string;
+};
 
 type Company = {
   id: number;
@@ -94,7 +103,7 @@ const ROLE_CATALOG = [
   { id: "supervisor", label: "Supervisor", scope: "Sales ops + warehouse · no payments" },
   { id: "sales", label: "Sales", scope: "Own leads, quotes, orders · view stock" },
   { id: "accountant", label: "Accounts", scope: "Invoices, receivables, per-client billing" },
-  { id: "logistics", label: "Logistics", scope: "Dispatch transport · no stock edits" },
+  { id: "logistics", label: "Logistics", scope: "Driver phone login · assigned after vehicle on Order desk" },
 ];
 
 const ASSIGNABLE = ["supervisor", "sales", "accountant", "logistics", "owner"] as const;
@@ -106,6 +115,9 @@ function Admin() {
   const [tab, setTab] = useState<Tab>("companies");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [fleet, setFleet] = useState<FleetVehicle[]>([]);
+  const [fleetForm, setFleetForm] = useState({ name: "", plate: "" });
+  const [addingFleet, setAddingFleet] = useState(false);
   const [audit, setAudit] = useState<Audit[]>([]);
   const [q, setQ] = useState("");
   const [error, setError] = useState("");
@@ -132,12 +144,14 @@ function Admin() {
     if (!isAdmin) return;
     setError("");
     try {
-      const [c, u] = await Promise.all([
+      const [c, u, v] = await Promise.all([
         api<Company[]>("/api/v1/companies"),
         api<User[]>("/api/v1/users"),
+        api<FleetVehicle[]>("/api/v1/vehicles").catch(() => [] as FleetVehicle[]),
       ]);
       setCompanies(c);
       setUsers(u);
+      setFleet(v);
       if (tab === "audit") {
         const a = await api<Audit[]>("/api/v1/audit?limit=50").catch(() => [] as Audit[]);
         setAudit(a);
@@ -345,15 +359,38 @@ function Admin() {
   const tabs: { id: Tab; label: string }[] = [
     { id: "companies", label: "Companies" },
     { id: "users", label: "Users" },
+    { id: "fleet", label: "Fleet" },
     { id: "roles", label: "Roles" },
     { id: "audit", label: "Audit" },
   ];
+
+  async function addFleetVehicle() {
+    setError("");
+    setAddingFleet(true);
+    try {
+      await api("/api/v1/vehicles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: fleetForm.name.trim(),
+          plate: fleetForm.plate.trim(),
+          kind: "truck",
+          driver_name: null,
+        }),
+      });
+      setFleetForm({ name: "", plate: "" });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not add vehicle");
+    } finally {
+      setAddingFleet(false);
+    }
+  }
 
   return (
     <div className="mx-auto max-w-6xl space-y-3 sm:space-y-4">
       <PageHeader
         title="Administration"
-        subtitle="Configure the system — not day-to-day ops"
+        subtitle="Owner adds companies, role-based users (incl. logistics drivers), and fleet trucks. Sales/Supervisor allot vehicle then driver on Order desk."
         action={
           tab === "users" ? (
             <button
@@ -373,7 +410,7 @@ function Admin() {
           {[
             { label: "Companies", value: String(activeCompanies || companies.length) },
             { label: "Active users", value: String(activeUsers) },
-            { label: "Roles", value: String(ROLE_CATALOG.length) },
+            { label: "Fleet trucks", value: String(fleet.length) },
             { label: "Audit entries", value: tab === "audit" ? String(audit.length) : "—" },
           ].map((s) => (
             <div key={s.label} className="px-3 py-2.5 sm:px-4 sm:py-3">
@@ -451,6 +488,7 @@ function Admin() {
         <section className="rounded-xl border border-border bg-card shadow-[var(--shadow-soft)]">
           <div className="flex flex-col gap-2 border-b border-border p-3 sm:flex-row sm:items-center sm:px-4">
             <h2 className="text-sm font-medium sm:mr-auto">Users</h2>
+            <p className="text-xs text-muted-foreground sm:mr-2">Create logistics role for drivers used on Order desk</p>
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -539,6 +577,60 @@ function Admin() {
           {!filteredUsers.length && (
             <p className="py-10 text-center text-sm text-muted-foreground">No users match.</p>
           )}
+        </section>
+      )}
+
+      {tab === "fleet" && (
+        <section className="space-y-3">
+          <div className="rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-soft)] sm:p-4">
+            <h2 className="text-sm font-medium">Add vehicle</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Trucks only — do not bind a driver here. Sales/Supervisor pick a logistics user after the vehicle on Order desk.
+            </p>
+            <form
+              className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void addFleetVehicle();
+              }}
+            >
+              <input
+                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                placeholder="Name · Tata 1109"
+                value={fleetForm.name}
+                onChange={(e) => setFleetForm((f) => ({ ...f, name: e.target.value }))}
+                required
+              />
+              <input
+                className="rounded-lg border border-border bg-background px-3 py-2 text-sm uppercase"
+                placeholder="Plate · KA-01-AB-4421"
+                value={fleetForm.plate}
+                onChange={(e) => setFleetForm((f) => ({ ...f, plate: e.target.value }))}
+                required
+              />
+              <button
+                type="submit"
+                disabled={addingFleet}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+              >
+                {addingFleet ? "Saving…" : "Add truck"}
+              </button>
+            </form>
+          </div>
+          <ul className="divide-y divide-border rounded-xl border border-border bg-card shadow-[var(--shadow-soft)]">
+            {fleet.map((v) => (
+              <li key={v.id} className="flex items-center justify-between gap-3 px-3 py-3 sm:px-4">
+                <span>
+                  <span className="block font-medium">{v.name}</span>
+                  <span className="text-xs text-muted-foreground">{v.plate}</span>
+                </span>
+                <Badge tone="neutral">{v.live_status || "idle"}</Badge>
+              </li>
+            ))}
+            {!fleet.length && (
+              <li className="px-3 py-10 text-center text-sm text-muted-foreground">No trucks yet.</li>
+            )}
+          </ul>
         </section>
       )}
 

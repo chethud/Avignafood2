@@ -11,6 +11,14 @@ from app.core.security import TokenError, safe_decode
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
+# These roles may omit X-Company-Id to see all companies in the org
+ORG_WIDE_ROLES = {
+    RoleName.SUPER_ADMIN,
+    RoleName.OWNER,
+    RoleName.ACCOUNTANT,
+    RoleName.SUPERVISOR,
+}
+
 
 class AuthContext:
     def __init__(self, user: User, company_id: int | None, permissions: set[str]):
@@ -25,8 +33,19 @@ class AuthContext:
 
     def require_company(self) -> int:
         if self.company_id is None:
-            raise HTTPException(status_code=400, detail="X-Company-Id header required")
+            raise HTTPException(
+                status_code=400,
+                detail="Pick a company first (not All companies) for this action",
+            )
         return self.company_id
+
+    def company_or_all(self) -> int | None:
+        """None = all companies in the organisation (Owner / Accounts / Supervisor / Admin)."""
+        if self.company_id is not None:
+            return self.company_id
+        if self.role in ORG_WIDE_ROLES:
+            return None
+        raise HTTPException(status_code=400, detail="X-Company-Id header required")
 
 
 def get_current_user(
@@ -87,7 +106,13 @@ def get_auth(
         company = db.query(Company).filter(Company.id == company_id).first()
         if not company or company.organization_id != user.organization_id:
             raise HTTPException(status_code=403, detail="No access to this company")
-        if user.role.name not in (RoleName.SUPER_ADMIN, RoleName.OWNER, RoleName.SALES):
+        if user.role.name not in (
+            RoleName.SUPER_ADMIN,
+            RoleName.OWNER,
+            RoleName.SALES,
+            RoleName.ACCOUNTANT,
+            RoleName.SUPERVISOR,
+        ):
             allowed = {uc.company_id for uc in user.companies}
             if company_id not in allowed:
                 raise HTTPException(status_code=403, detail="No access to this company")

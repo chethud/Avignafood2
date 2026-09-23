@@ -1,5 +1,7 @@
 """Seed roles, permissions, org, companies, and super admin."""
 
+import os
+
 from app.core.database import Base, SessionLocal, engine
 from app.core.models import (
     Company,
@@ -19,6 +21,27 @@ from app.accounts.ensure_schema import ensure_accounts_schema
 
 # Import models so metadata is registered
 import app.core.models  # noqa: F401
+
+
+def _want_demo_transactions() -> bool:
+    """Hosted Render stays clean; local / explicit flag gets full sales+accounts+logistics dummy data."""
+    flag = (os.getenv("SEED_DEMO_TRANSACTIONS") or "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    on_render = os.getenv("RENDER") == "true" or bool(os.getenv("RENDER_SERVICE_ID"))
+    return not on_render
+
+
+def _seed_demo_transactions(db) -> None:
+    """Leads, quotes, visits, invoices, payments, credit notes, SOs, runs, POD, deliveries."""
+    # Accounts first so sales collection follow-ups can attach to open invoices
+    _sync_demo_accounts(db)
+    _sync_demo_accounts_extra(db)
+    _sync_demo_sales(db)
+    _sync_demo_logistics(db)
+    _sync_demo_deliveries(db)
 
 PERMISSIONS = [
     ("dashboard.view", "View dashboard"),
@@ -155,7 +178,6 @@ ROLE_PERMS: dict[RoleName, list[str] | str] = {
         "customers.create",
         "products.view",
         "dispatch.view",
-        "dispatch.create",
         "dispatch.edit",
         "sales.view",
         "invoices.view",
@@ -174,24 +196,44 @@ COMPANY_BRANDING = [
         "trade_name": "Asian Apex",
         "invoice_prefix": "AA",
         "logo_url": "/logos/asian-apex.jpg",
+        "gstin": "29AAAAA0001A1Z1",
+        "pan": "AAAAA0001A",
+        "address": "No. 14, Industrial Area, Peenya, Bengaluru 560058",
+        "phone": "+91 80 4123 1001",
+        "email": "accounts@asianapex.local",
     },
     {
         "legal_name": "Avighna Speciality Ingredients Pvt Ltd",
         "trade_name": "Avighna",
         "invoice_prefix": "AV",
         "logo_url": "/logos/avighna.png",
+        "gstin": "29AAAAA0002A1Z2",
+        "pan": "AAAAA0002A",
+        "address": "2nd Floor, Spice Park, Yeshwanthpur, Bengaluru 560022",
+        "phone": "+91 80 4123 1002",
+        "email": "hello@avighna.local",
     },
     {
         "legal_name": "Ganesh Inc.",
         "trade_name": "Ganesh Inc",
         "invoice_prefix": "GI",
         "logo_url": "/logos/ganesh-inc.jpg",
+        "gstin": "29AAAAA0003A1Z3",
+        "pan": "AAAAA0003A",
+        "address": "Plot 8, Bommasandra Industrial Area, Bengaluru 560099",
+        "phone": "+91 80 4123 1003",
+        "email": "sales@ganeshinc.local",
     },
     {
         "legal_name": "Atharva Associates",
         "trade_name": "Atharva Associates",
         "invoice_prefix": "AT",
         "logo_url": "/logos/atharva-associates.png",
+        "gstin": "29AAAAA0004A1Z4",
+        "pan": "AAAAA0004A",
+        "address": "21, Magadi Road, Bengaluru 560023",
+        "phone": "+91 80 4123 1004",
+        "email": "office@atharva.local",
     },
 ]
 
@@ -245,6 +287,11 @@ def _sync_company_branding(db) -> None:
         company.trade_name = brand["trade_name"]
         company.invoice_prefix = brand["invoice_prefix"]
         company.logo_url = brand["logo_url"]
+        company.gstin = brand["gstin"]
+        company.pan = brand["pan"]
+        company.address = brand["address"]
+        company.phone = brand["phone"]
+        company.email = brand["email"]
     db.commit()
     print(f"Company branding synced for {min(len(companies), len(COMPANY_BRANDING))} companies")
 
@@ -273,11 +320,13 @@ def _sync_role_user(
             db.flush()
             perm_map[code] = p.id
     wanted = ROLE_PERMS[role_name]
-    codes = list(perm_map.keys()) if wanted == "*" else list(wanted)
-    db.query(RolePermission).filter(RolePermission.role_id == role.id).delete()
+    codes = list(perm_map.keys()) if wanted == "*" else list(dict.fromkeys(wanted))
+    db.query(RolePermission).filter(RolePermission.role_id == role.id).delete(synchronize_session=False)
+    db.flush()
     for code in codes:
         if code in perm_map:
             db.add(RolePermission(role_id=role.id, permission_id=perm_map[code]))
+    db.flush()
 
     org = db.query(Organization).first()
     companies = db.query(Company).order_by(Company.id).all()
@@ -308,8 +357,8 @@ def _sync_role_user(
 
 
 FLEET = (
-    ("Tata 1109", "KA-01-AB-4421", "Ravi Kumar"),
-    ("Tata 407", "KA-05-CD-2287", "Suresh Naik"),
+    ("Tata 1109", "KA-01-AB-4421", None),
+    ("Tata 407", "KA-05-CD-2287", None),
 )
 
 
@@ -335,9 +384,27 @@ def _sync_vehicles(db) -> None:
                     driver_name=driver,
                 )
             )
+        else:
+            # Vehicles are fleet assets; logistics people are separate user accounts
+            row.driver_name = None
     db.commit()
     count = db.query(Vehicle).filter(Vehicle.organization_id == org.id, Vehicle.is_active.is_(True)).count()
     print(f"Fleet has {count} active vehicles")
+
+
+def _sync_logistics_drivers(db) -> None:
+    """Extra logistics logins Owner can use as assignable drivers (separate from trucks)."""
+    for email, name, password in (
+        ("ravi@avighnya.local", "Ravi Kumar", "driver123"),
+        ("suresh@avighnya.local", "Suresh Naik", "driver123"),
+    ):
+        _sync_role_user(
+            db,
+            role_name=RoleName.LOGISTICS,
+            email=email,
+            full_name=name,
+            password=password,
+        )
 
 
 def _sync_demo_deliveries(db) -> None:
@@ -670,16 +737,45 @@ def _clear_demo_transactions(db) -> None:
         "leads",
         "stock_movements",
     ]
-    have = set(inspect(db.get_bind()).get_table_names())
+    bind = db.get_bind()
+    have = set(inspect(bind).get_table_names())
     existing = [t for t in tables if t in have]
     if existing:
-        db.execute(text("TRUNCATE TABLE " + ", ".join(existing) + " RESTART IDENTITY CASCADE"))
+        if bind.dialect.name == "postgresql":
+            db.execute(text("TRUNCATE TABLE " + ", ".join(existing) + " RESTART IDENTITY CASCADE"))
+        else:
+            for table in reversed(existing):
+                db.execute(text(f"DELETE FROM {table}"))
     for veh in db.query(Vehicle).all():
         veh.live_status = "idle"
     for bal in db.query(StockBalance).all():
         bal.quantity = 0
     db.commit()
     print("Old dummy data cleared")
+
+
+def _clear_demo_masters(db) -> None:
+    """Remove seeded customers, products, and stock. Login users and companies stay."""
+    from sqlalchemy import inspect, text
+
+    tables = [
+        "customer_contacts",
+        "customers",
+        "stock_balances",
+        "products",
+        "audit_logs",
+    ]
+    bind = db.get_bind()
+    have = set(inspect(bind).get_table_names())
+    existing = [t for t in tables if t in have]
+    if existing:
+        if bind.dialect.name == "postgresql":
+            db.execute(text("TRUNCATE TABLE " + ", ".join(existing) + " RESTART IDENTITY CASCADE"))
+        else:
+            for table in existing:
+                db.execute(text(f"DELETE FROM {table}"))
+    db.commit()
+    print("Demo customers, products, and stock cleared")
 
 
 def _sync_demo_logistics(db) -> None:
@@ -943,12 +1039,13 @@ def _sync_role_perms(db) -> None:
         wanted = ROLE_PERMS.get(role.name)
         if wanted is None:
             continue
-        codes = list(perm_map.keys()) if wanted == "*" else wanted
+        codes = list(perm_map.keys()) if wanted == "*" else list(dict.fromkeys(wanted))
         have = {rp.permission_id for rp in db.query(RolePermission).filter(RolePermission.role_id == role.id)}
         for code in codes:
             pid = perm_map.get(code)
             if pid and pid not in have:
                 db.add(RolePermission(role_id=role.id, permission_id=pid))
+                have.add(pid)
     db.commit()
 
 
@@ -1464,13 +1561,19 @@ def seed() -> None:
             )
             _sync_role_perms(db)
             _sync_vehicles(db)
-            _sync_demo_customers(db)
-            _sync_demo_products(db)
-            # Hosted/free deploys: wipe transactional dummy rows; do not re-seed them
-            if engine.dialect.name == "postgresql":
-                _clear_demo_transactions(db)
+            _sync_logistics_drivers(db)
+            if _want_demo_transactions():
+                _sync_demo_customers(db)
                 _sync_demo_products(db)
-            print("Seed refreshed (users/master data only; dummy transactions cleared)")
+                if engine.dialect.name == "postgresql":
+                    _clear_demo_transactions(db)
+                    _sync_demo_products(db)
+                _seed_demo_transactions(db)
+                print("Seed refreshed (users/master + full dummy transactions)")
+            else:
+                _clear_demo_transactions(db)
+                _clear_demo_masters(db)
+                print("Seed refreshed (users/master data only; dummy data cleared)")
             return
 
         for code, desc in PERMISSIONS:
@@ -1494,14 +1597,18 @@ def seed() -> None:
         db.flush()
 
         companies = []
-        for i, brand in enumerate(COMPANY_BRANDING, start=1):
+        for brand in COMPANY_BRANDING:
             c = Company(
                 organization_id=org.id,
                 legal_name=brand["legal_name"],
                 trade_name=brand["trade_name"],
                 invoice_prefix=brand["invoice_prefix"],
                 logo_url=brand["logo_url"],
-                gstin=f"29AAAAA000{i}A1Z{i}",
+                gstin=brand["gstin"],
+                pan=brand["pan"],
+                address=brand["address"],
+                phone=brand["phone"],
+                email=brand["email"],
             )
             db.add(c)
             db.flush()
@@ -1589,17 +1696,28 @@ def seed() -> None:
 
         db.commit()
         _sync_vehicles(db)
-        _sync_demo_customers(db)
-        _sync_demo_products(db)
-        # No logistics/sales/accounts dummy transactions — clean slate for demo hosting
-        print(
-            "Seed complete (clean): admin@avighnya.local / admin123 · "
-            "sales@avighnya.local / sales123 · "
-            "accounts@avighnya.local / accounts123 · "
-            "supervisor@avighnya.local / super123 · "
-            "logistics@avighnya.local / logistics123 · "
-            "owner@avighnya.local / owner123"
-        )
+        _sync_logistics_drivers(db)
+        if _want_demo_transactions():
+            _sync_demo_customers(db)
+            _sync_demo_products(db)
+            _seed_demo_transactions(db)
+            print(
+                "Seed complete (with dummy data): admin@avighnya.local / admin123 · "
+                "sales@avighnya.local / sales123 · "
+                "accounts@avighnya.local / accounts123 · "
+                "supervisor@avighnya.local / super123 · "
+                "logistics@avighnya.local / logistics123 · "
+                "owner@avighnya.local / owner123"
+            )
+        else:
+            print(
+                "Seed complete (clean): admin@avighnya.local / admin123 · "
+                "sales@avighnya.local / sales123 · "
+                "accounts@avighnya.local / accounts123 · "
+                "supervisor@avighnya.local / super123 · "
+                "logistics@avighnya.local / logistics123 · "
+                "owner@avighnya.local / owner123"
+            )
     finally:
         db.close()
 

@@ -27,14 +27,14 @@ npm run dev
 
 ### Seed logins
 
-| Email | Password | Role |
-|-------|----------|------|
-| admin@avighnya.local | admin123 | Super Admin |
-| owner@avighnya.local | owner123 | Owner |
-| supervisor@avighnya.local | super123 | Supervisor |
-| sales@avighnya.local | sales123 | Sales |
-| accounts@avighnya.local | accounts123 | Accounts |
-| logistics@avighnya.local | logistics123 | Logistics |
+| Role | Email | Password |
+|------|-------|----------|
+| Sales | sales@avighnya.local | sales123 |
+| Accounts | accounts@avighnya.local | accounts123 |
+| Logistics | logistics@avighnya.local | logistics123 |
+| Supervisor | supervisor@avighnya.local | super123 |
+| Owner | owner@avighnya.local | owner123 |
+| Super Admin | admin@avighnya.local | admin123 |
 
 ### Companies
 

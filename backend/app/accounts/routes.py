@@ -116,11 +116,18 @@ def interest_loss(inv: Invoice, on: date | None = None) -> Decimal:
     return (outstanding(inv) * INTEREST_ANNUAL * Decimal(d) / Decimal("36500")).quantize(Decimal("0.01"))
 
 
-def _open_invoices(db: Session, company_id: int, customer_id: int | None = None) -> list[Invoice]:
+def _open_invoices(
+    db: Session,
+    company_id: int | None,
+    organization_id: int,
+    customer_id: int | None = None,
+) -> list[Invoice]:
     q = db.query(Invoice).filter(
-        Invoice.company_id == company_id,
+        Invoice.organization_id == organization_id,
         Invoice.status.in_((InvoiceStatus.OPEN, InvoiceStatus.PARTIAL)),
     )
+    if company_id is not None:
+        q = q.filter(Invoice.company_id == company_id)
     if customer_id:
         q = q.filter(Invoice.customer_id == customer_id)
     return q.order_by(nulls_last(Invoice.due_date), Invoice.id).all()
@@ -131,14 +138,17 @@ def aging_report(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     today = date.today()
-    customers = {
-        c.id: c
-        for c in db.query(Customer).filter(Customer.company_id == company_id, Customer.is_active.is_(True)).all()
-    }
+    cust_q = db.query(Customer).filter(
+        Customer.organization_id == auth.organization_id,
+        Customer.is_active.is_(True),
+    )
+    if company_id is not None:
+        cust_q = cust_q.filter(Customer.company_id == company_id)
+    customers = {c.id: c for c in cust_q.all()}
     buckets: dict[int, AgingBucket] = {}
-    for inv in _open_invoices(db, company_id):
+    for inv in _open_invoices(db, company_id, auth.organization_id):
         bal = outstanding(inv)
         if bal <= 0:
             continue
@@ -178,13 +188,19 @@ def credit_control(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     today = date.today()
     out: list[CreditRow] = []
-    for c in db.query(Customer).filter(Customer.company_id == company_id, Customer.is_active.is_(True)).order_by(Customer.name):
+    cust_q = db.query(Customer).filter(
+        Customer.organization_id == auth.organization_id,
+        Customer.is_active.is_(True),
+    )
+    if company_id is not None:
+        cust_q = cust_q.filter(Customer.company_id == company_id)
+    for c in cust_q.order_by(Customer.name):
         due = Decimal("0")
         overdue = Decimal("0")
-        for inv in _open_invoices(db, company_id, c.id):
+        for inv in _open_invoices(db, company_id, auth.organization_id, c.id):
             bal = outstanding(inv)
             due += bal
             if delay_days(inv, today) > 0:
@@ -219,14 +235,15 @@ def list_notes(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    rows = (
-        db.query(CreditNote)
-        .filter(CreditNote.company_id == company_id)
-        .order_by(CreditNote.id.desc())
-        .all()
-    )
-    invs = {i.id: i for i in db.query(Invoice).filter(Invoice.company_id == company_id).all()}
+    company_id = auth.company_or_all()
+    q = db.query(CreditNote).filter(CreditNote.organization_id == auth.organization_id)
+    if company_id is not None:
+        q = q.filter(CreditNote.company_id == company_id)
+    rows = q.order_by(CreditNote.id.desc()).all()
+    inv_q = db.query(Invoice).filter(Invoice.organization_id == auth.organization_id)
+    if company_id is not None:
+        inv_q = inv_q.filter(Invoice.company_id == company_id)
+    invs = {i.id: i for i in inv_q.all()}
     return [
         NoteOut(
             id=r.id,
@@ -329,7 +346,7 @@ def allocate_payment(
     )
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    invoices = _open_invoices(db, company_id, customer.id)
+    invoices = _open_invoices(db, company_id, auth.organization_id, customer.id)
     if body.invoice_ids:
         want = set(body.invoice_ids)
         invoices = [i for i in invoices if i.id in want]
@@ -383,15 +400,15 @@ def aging_by_salesperson(
     auth: AuthContext = Depends(require_perms("invoices.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     today = date.today()
-    orders = {
-        o.id: o
-        for o in db.query(SalesOrder).filter(SalesOrder.company_id == company_id).all()
-    }
+    so_q = db.query(SalesOrder).filter(SalesOrder.organization_id == auth.organization_id)
+    if company_id is not None:
+        so_q = so_q.filter(SalesOrder.company_id == company_id)
+    orders = {o.id: o for o in so_q.all()}
     users = {u.id: u for u in db.query(User).all()}
     buckets: dict[int, AgingSalesperson] = {}
-    for inv in _open_invoices(db, company_id):
+    for inv in _open_invoices(db, company_id, auth.organization_id):
         bal = outstanding(inv)
         if bal <= 0:
             continue

@@ -1,8 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { FormEvent, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
+import { FormEvent, useEffect, useState } from "react";
 import { API_URL, setAuth, api } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { firms } from "@/lib/erp-data";
+import { applyDefaultFirmForRole } from "@/lib/company-context";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
@@ -13,8 +15,20 @@ function LoginPage() {
   const { refresh } = useMe();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Wake Render API while the login page is open (free tier sleeps)
+  useEffect(() => {
+    if (!API_URL) return;
+    const ping = () => {
+      void fetch(`${API_URL}/health`, { method: "GET", mode: "cors", cache: "no-store" }).catch(() => undefined);
+    };
+    ping();
+    const id = window.setInterval(ping, 5 * 60 * 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -31,14 +45,22 @@ function LoginPage() {
       });
       if (!res.ok) throw new Error("Invalid credentials");
       const data = await res.json();
-      setAuth(data.access_token, firms[0].companyId);
+      setAuth(data.access_token);
       const session = await refresh();
       if (!session) throw new Error("Could not load your account");
+      const firm = applyDefaultFirmForRole(session.user.role);
       try {
         const companies = await api<{ id: number }[]>("/api/v1/companies");
-        if (companies[0]) localStorage.setItem("companyId", String(companies[0].id));
+        if (companies[0] && firm === "all") {
+          localStorage.setItem("companyId", String(companies[0].id));
+        } else if (companies[0] && firm !== "all") {
+          const match = firms.find((f) => f.id === firm);
+          localStorage.setItem("companyId", String(match?.companyId ?? companies[0].id));
+        }
       } catch {
-        /* keep default */
+        if (firms[0] && !localStorage.getItem("companyId")) {
+          localStorage.setItem("companyId", String(firms[0].companyId));
+        }
       }
       navigate({ to: "/" });
     } catch (err) {
@@ -49,7 +71,7 @@ function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
       <form onSubmit={onSubmit} className="w-full max-w-md rounded-2xl border border-border bg-card p-8 shadow-[var(--shadow-soft)]">
         <div className="mb-4 flex flex-wrap items-center justify-center gap-3">
           {firms.filter((f) => f.logo).map((f) => (
@@ -57,12 +79,12 @@ function LoginPage() {
           ))}
         </div>
         <div className="mb-1 text-center font-[Fraunces,Georgia,serif] text-3xl tracking-tight">Avighna Group</div>
-        <p className="mb-6 text-center text-sm text-muted-foreground">Sign in — UI follows the company you pick</p>
+        <p className="mb-6 text-center text-sm text-foreground">Sign in to continue</p>
         {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
-        <label className="mb-3 block text-sm text-muted-foreground">
+        <label className="mb-3 block text-sm font-medium text-foreground">
           Email
           <input
-            className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-normal text-foreground outline-none focus:border-primary"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             type="email"
@@ -71,18 +93,32 @@ function LoginPage() {
             required
           />
         </label>
-        <label className="mb-6 block text-sm text-muted-foreground">
+        <label className="mb-4 block text-sm font-medium text-foreground">
           Password
-          <input
-            className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            name="password"
-            autoComplete="current-password"
-            required
-          />
+          <span className="relative mt-1 block">
+            <input
+              className="w-full rounded-xl border border-border bg-background px-3 py-2 pr-10 text-sm font-normal text-foreground outline-none focus:border-primary"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type={showPassword ? "text" : "password"}
+              name="password"
+              autoComplete="current-password"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              required
+            />
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-foreground hover:bg-secondary"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              onClick={() => setShowPassword((v) => !v)}
+            >
+              {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            </button>
+          </span>
         </label>
+
         <button
           type="submit"
           disabled={loading}

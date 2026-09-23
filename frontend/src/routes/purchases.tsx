@@ -126,20 +126,7 @@ function Purchases() {
     } catch {
       /* offline demo rows */
     }
-    setRows(
-      byFirm(mockPOs, firm).map((p) => ({
-        id: p.id,
-        customer: "—",
-        source: "manufacturer",
-        manufacturer: p.manufacturer,
-        product: p.product,
-        qty: p.qty,
-        received: p.received,
-        value: p.value,
-        eta: p.eta,
-        status: p.status,
-      })),
-    );
+    setRows([]);
   }
 
   useEffect(() => {
@@ -250,6 +237,24 @@ function Purchases() {
   const incoming = useMemo(() => openOrders.reduce((a, p) => a + (p.qty - p.received), 0), [openOrders]);
   const committed = useMemo(() => rows.reduce((a, p) => a + p.value, 0), [rows]);
 
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((p) => {
+      if (statusF !== "all" && p.status.toLowerCase() !== statusF.toLowerCase()) return false;
+      if (sourceF !== "all" && p.source !== sourceF) return false;
+      if (!needle) return true;
+      return `${p.id} ${p.customer} ${p.manufacturer} ${p.product} ${p.source} ${p.status}`.toLowerCase().includes(needle);
+    });
+  }, [rows, q, statusF, sourceF]);
+
+  const filtersActive = Boolean(q.trim()) || statusF !== "all" || sourceF !== "all";
+
+  function clearFilters() {
+    setQ("");
+    setStatusF("all");
+    setSourceF("all");
+  }
+
   return (
     <>
       <PageHeader
@@ -324,7 +329,11 @@ function Purchases() {
             );
           })}
         </Table>
-        {!rows.length && <p className="py-8 text-center text-sm text-muted-foreground">No purchases yet.</p>}
+        {!visible.length && (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            {rows.length ? "No purchases match this view." : "No purchases yet."}
+          </p>
+        )}
       </Panel>
 
       {open && (

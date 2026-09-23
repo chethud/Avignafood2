@@ -1,20 +1,35 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { useEffect, type ReactNode, useState } from "react";
+import { useEffect, type ReactNode, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Sparkles, Users, Handshake, MapPin, Boxes, Truck, ShoppingCart,
   ReceiptText, Wallet, BarChart3, Settings, Menu, X, Check, ChevronDown, Bell, ClipboardList,
-  ChevronLeft, Scale, Banknote,
+  ChevronLeft, Scale, Banknote, History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCompany } from "@/lib/company-context";
 import { firms, firmName, quietAlerts, type FirmId } from "@/lib/erp-data";
-import { getToken, mediaUrl } from "@/lib/api";
+import { getToken, mediaUrl, API_URL } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { applyBrand } from "@/lib/brand";
 import { nameInitials } from "@/lib/format";
-import { ApprovalPopup, usePendingApprovals } from "@/components/erp/ApprovalPopup";
+import { InvoiceRequestPopup, useInvoiceRequests } from "@/components/erp/InvoiceRequestPopup";
+import { usePendingApprovals } from "@/components/erp/ApprovalPopup";
 import { Badge } from "@/components/erp/ui-bits";
+
+const RENDER_PING_MS = 5 * 60 * 1000;
+
+function useRenderKeepAlive() {
+  useEffect(() => {
+    if (!API_URL) return;
+    const ping = () => {
+      void fetch(`${API_URL}/health`, { method: "GET", mode: "cors", cache: "no-store" }).catch(() => undefined);
+    };
+    ping();
+    const id = window.setInterval(ping, RENDER_PING_MS);
+    return () => window.clearInterval(id);
+  }, []);
+}
 
 function ProfileAvatar({
   name,
@@ -84,12 +99,15 @@ const ownerNav: NavSection[] = [
     items: [
       { to: "/invoices", label: "Invoices", icon: ReceiptText },
       { to: "/receivables", label: "Receivables", icon: Wallet },
+      { to: "/payments", label: "Payments received", icon: Banknote },
       { to: "/credit", label: "Credit control", icon: Scale },
       { to: "/reports", label: "Accounts reports", icon: BarChart3 },
       { to: "/analytics", label: "Analytics", icon: BarChart3 },
     ],
   },
-  { group: "Setup", items: [{ to: "/admin", label: "Administration", icon: Settings }] },
+  { group: "Setup", items: [
+    { to: "/admin", label: "Administration", icon: Settings },
+  ] },
 ];
 
 /**
@@ -140,7 +158,7 @@ const navByRole: Record<string, NavSection[]> = {
       items: [
         { to: "/invoices", label: "Invoices", icon: ReceiptText },
         { to: "/receivables", label: "Receivables", icon: Wallet },
-        { to: "/payments", label: "Payments", icon: Banknote },
+        { to: "/payments", label: "Payments received", icon: Banknote },
         { to: "/clients", label: "Customers", icon: Users },
         { to: "/more", label: "More", icon: Menu },
       ],
@@ -151,12 +169,16 @@ const navByRole: Record<string, NavSection[]> = {
       group: "Drive",
       items: [
         { to: "/", label: "Today", icon: LayoutDashboard },
-        { to: "/runs", label: "Runs", icon: Truck },
+        { to: "/history", label: "History", icon: History },
         { to: "/profile", label: "Profile", icon: Users },
       ],
     },
   ],
 };
+
+const FALLBACK_NAV: NavSection[] = [
+  { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard }] },
+];
 
 function flattenNav(sections: NavSection[]): NavItem[] {
   return sections.flatMap((s) => s.items);
@@ -172,7 +194,7 @@ const SALES_TABS: NavItem[] = [
 
 const LOGISTICS_TABS: NavItem[] = [
   { to: "/", label: "Today", icon: LayoutDashboard },
-  { to: "/runs", label: "Runs", icon: Truck },
+  { to: "/history", label: "History", icon: History },
 ];
 
 function SalesPhoneShell({
@@ -212,7 +234,10 @@ function SalesPhoneShell({
         </Link>
       </header>
       <main className="mx-auto max-w-md px-4 py-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))]">{children}</main>
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
+      <nav
+        data-tour="shell-nav-sales"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur"
+      >
         {SALES_TABS.map((item) => {
           const active = pathname === item.to;
           return (
@@ -280,7 +305,10 @@ function LogisticsPhoneShell({
         </Link>
       </header>
       <main className="mx-auto max-w-md px-4 py-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))]">{children}</main>
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
+      <nav
+        data-tour="shell-nav-logistics"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur"
+      >
         {LOGISTICS_TABS.map((item) => {
           const active = pathname === item.to;
           return (
@@ -327,7 +355,7 @@ function CompanySwitcher({ compact, hideThumb }: { compact?: boolean; hideThumb?
   const active = options.find((o) => o.id === firm);
   const showThumb = !hideThumb && Boolean(active?.logo);
   return (
-    <div className="relative">
+    <div className="relative" data-tour="shell-company">
       <button
         onClick={() => setOpen((v) => !v)}
         className={cn(
@@ -360,7 +388,7 @@ function CompanySwitcher({ compact, hideThumb }: { compact?: boolean; hideThumb?
                   onClick={() => {
                     setFirm(o.id);
                     setOpen(false);
-                    if (o.id !== "all") window.location.reload();
+                    window.location.reload();
                   }}
                   className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-secondary"
                 >
@@ -388,36 +416,51 @@ function CompanySwitcher({ compact, hideThumb }: { compact?: boolean; hideThumb?
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [approvalOpen, setApprovalOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const { me, loading } = useMe();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
   const { firm } = useCompany();
   const activeFirm = firms.find((f) => f.id === firm);
-  const { items, dismiss, canApprove } = usePendingApprovals();
+  const { items, canApprove } = usePendingApprovals();
+  const { items: invoiceRequests, dismiss: dismissInvoice, canInvoice } = useInvoiceRequests();
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const invoiceAutoPrompted = useRef(false);
+  useRenderKeepAlive();
 
   useEffect(() => {
     if (!getToken()) navigate({ to: "/login" });
     else if (!loading && !me) navigate({ to: "/login" });
   }, [navigate, loading, me]);
 
-  // Auto-open popup when new approvals arrive
+  // One prompt only — never stack over /invoices form, never auto-chain the next SO
   useEffect(() => {
-    if (canApprove && items.length > 0) setApprovalOpen(true);
-  }, [canApprove, items.length]);
+    if (!canInvoice) return;
+    if (pathname.startsWith("/invoices")) {
+      setInvoiceOpen(false);
+      return;
+    }
+    if (invoiceRequests.length === 0) {
+      invoiceAutoPrompted.current = false;
+      setInvoiceOpen(false);
+      return;
+    }
+    if (!invoiceAutoPrompted.current) {
+      invoiceAutoPrompted.current = true;
+      setInvoiceOpen(true);
+    }
+  }, [canInvoice, invoiceRequests.length, pathname]);
 
   const role = me?.user.role || "";
   const roleLabel = role.replaceAll("_", " ") || (loading ? "…" : "Signed in");
   // Unknown / loading → dashboard only (never fall through to owner/admin nav)
-  const activeNav =
-    navByRole[role] ??
-    [{ group: "Overview", items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard }] }];
+  const activeNav = navByRole[role] ?? FALLBACK_NAV;
   const flat = flattenNav(activeNav);
   const bottomTabs = flat.slice(0, 4);
   const alerts = quietAlerts(firm).filter((a) => pathAllowed(a.to, activeNav));
   const alertBadge =
     (canApprove ? items.length : 0) +
+    (canInvoice ? invoiceRequests.length : 0) +
     alerts.filter((a) => a.count > 0 && a.tone !== "good").length;
 
   // Hide ≠ security, but don't let roles deep-link into modules they shouldn't see
@@ -425,7 +468,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (loading || !me) return;
     if (pathname === "/login") return;
     if (!pathAllowed(pathname, activeNav)) navigate({ to: "/" });
-  }, [loading, me, pathname, activeNav, navigate]);
+  }, [loading, me, pathname, role, navigate]);
+
 
   if (loading) {
     return <div className="min-h-dvh bg-background" />;
@@ -475,7 +519,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <CompanySwitcher hideThumb={hasBrandLogo} />
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-1 sm:px-4">
+      <nav data-tour="shell-nav" className="min-h-0 flex-1 overflow-y-auto px-3 py-1 sm:px-4">
         <div className="flex flex-col gap-4">
           {activeNav.map((section) => (
             <div key={section.group}>
@@ -563,7 +607,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <CompanySwitcher compact />
           </div>
           <div className="hidden min-w-0 flex-1 truncate text-sm text-muted-foreground lg:block">{firmName(firm)}</div>
-          <div className="relative">
+          <div className="relative" data-tour="shell-bell">
             <button
               type="button"
               className="relative rounded-lg p-2 hover:bg-secondary"
@@ -586,16 +630,26 @@ export function AppShell({ children }: { children: ReactNode }) {
                     <p className="text-sm font-medium">Notifications</p>
                   </div>
                   {canApprove && items.length > 0 && (
+                    <Link
+                      to="/sales"
+                      className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2.5 text-left text-sm hover:bg-secondary/60"
+                      onClick={() => setNotifOpen(false)}
+                    >
+                      <span>Order requests waiting</span>
+                      <Badge tone="warn">{items.length}</Badge>
+                    </Link>
+                  )}
+                  {canInvoice && invoiceRequests.length > 0 && (
                     <button
                       type="button"
                       className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2.5 text-left text-sm hover:bg-secondary/60"
                       onClick={() => {
                         setNotifOpen(false);
-                        setApprovalOpen(true);
+                        setInvoiceOpen(true);
                       }}
                     >
-                      <span>Approvals waiting</span>
-                      <Badge tone="warn">{items.length}</Badge>
+                      <span>Invoices to raise</span>
+                      <Badge tone="warn">{invoiceRequests.length}</Badge>
                     </button>
                   )}
                   <ul className="max-h-72 overflow-y-auto py-1">
@@ -651,11 +705,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         </button>
       </nav>
 
-      <ApprovalPopup
-        open={approvalOpen && items.length > 0}
-        onClose={() => setApprovalOpen(false)}
-        items={items}
-        onDecided={(key) => dismiss(key)}
+      <InvoiceRequestPopup
+        open={invoiceOpen && invoiceRequests.length > 0 && !pathname.startsWith("/invoices")}
+        onClose={() => setInvoiceOpen(false)}
+        items={invoiceRequests.slice(0, 1)}
+        waitingCount={invoiceRequests.length}
+        onDismiss={dismissInvoice}
       />
     </div>
   );

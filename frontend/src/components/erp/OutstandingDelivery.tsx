@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { api } from "@/lib/api";
+import { useCompany } from "@/lib/company-context";
+import { firmLabelByCompanyId } from "@/lib/erp-data";
 import { Badge, Panel } from "@/components/erp/ui-bits";
 
 export type OutstandingRow = {
   order_id: number;
+  company_id: number;
+  company_name?: string | null;
   customer_name: string;
   product_id: number;
   product_name: string;
@@ -21,6 +25,7 @@ function kg(v: string | number, unit = "KG") {
 }
 
 export function OutstandingDelivery({ canComplete = false }: { canComplete?: boolean }) {
+  const { firm } = useCompany();
   const [rows, setRows] = useState<OutstandingRow[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<number | null>(null);
@@ -37,13 +42,16 @@ export function OutstandingDelivery({ canComplete = false }: { canComplete?: boo
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [firm]);
 
-  async function complete(orderId: number) {
+  async function complete(orderId: number, companyId: number) {
     setBusy(orderId);
     setError("");
     try {
-      await api(`/api/v1/sales-orders/${orderId}/fulfill-outstanding`, { method: "POST" });
+      await api(`/api/v1/sales-orders/${orderId}/fulfill-outstanding`, {
+        method: "POST",
+        companyId,
+      });
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not complete remaining qty");
@@ -61,6 +69,7 @@ export function OutstandingDelivery({ canComplete = false }: { canComplete?: boo
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
         Orders where Sales asked for more than stock. Remaining qty stays here until new stock comes in and the order is completed.
+        {firm === "all" ? " Showing all companies." : ""}
       </p>
       {error && <p className="text-sm text-destructive">{error}</p>}
       {!rows.length && !error && (
@@ -71,8 +80,13 @@ export function OutstandingDelivery({ canComplete = false }: { canComplete?: boo
       {Object.entries(grouped).map(([id, lines]) => {
         const orderId = Number(id);
         const ready = lines.every((ln) => ln.can_complete);
+        const companyLabel = lines[0]?.company_name || firmLabelByCompanyId(lines[0]?.company_id);
         return (
-          <Panel key={orderId} title={`SO-${orderId} · ${lines[0]?.customer_name || ""}`}>
+          <Panel
+            key={orderId}
+            title={`SO-${orderId} · ${lines[0]?.customer_name || ""}`}
+            hint={companyLabel || undefined}
+          >
             <ul className="space-y-2 text-sm">
               {lines.map((ln) => (
                 <li key={`${ln.order_id}-${ln.product_id}`} className="flex items-start justify-between gap-3 rounded-xl border border-border px-3 py-2">
@@ -94,7 +108,7 @@ export function OutstandingDelivery({ canComplete = false }: { canComplete?: boo
                 <button
                   type="button"
                   disabled={!ready || busy === orderId}
-                  onClick={() => void complete(orderId)}
+                  onClick={() => void complete(orderId, lines[0].company_id)}
                   className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
                 >
                   {busy === orderId ? "Completing…" : "Complete remaining"}

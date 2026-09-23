@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { api, mediaUrl } from "@/lib/api";
 import { money, waHref } from "@/lib/format";
-import { firms } from "@/lib/erp-data";
+import { firms, firmLabelByCompanyId } from "@/lib/erp-data";
 import { useCompany } from "@/lib/company-context";
 import { dueCountdown, payStatus, payStatusLabel } from "@/lib/accounts";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
@@ -15,33 +15,24 @@ export const Route = createFileRoute("/invoices")({
       { name: "description", content: "Generate GST invoices from loads that are almost ready to dispatch. Books stay in Tally Prime." },
     ],
   }),
+  validateSearch: (search: Record<string, unknown>): { raise?: string } => ({
+    raise: typeof search.raise === "string" ? search.raise : undefined,
+  }),
   component: Invoices,
 });
 
-type Billable = {
-  dispatch_id: number;
-  customer_id: number;
-  customer_name: string;
-  product: string;
-  quantity: string | number;
-  unit_price: string | number;
-  estimated_total: string | number;
-  dispatch_status: string;
-  vehicle: string | null;
-  lr: string | null;
-  eta: string | null;
-  notes: string | null;
-  invoiced?: boolean;
-  can_invoice?: boolean;
-};
-
 type BillableOrder = {
   sales_order_id: number;
+  company_id: number;
+  company_name?: string | null;
   customer_id: number;
   customer_name: string;
   address: string | null;
   ops_status: string;
   logistics_status: string | null;
+  vehicle?: string | null;
+  driver_name?: string | null;
+  delivery_mode?: string;
   line_count: number;
   qty: string | number;
   estimated_total: string | number;
@@ -49,6 +40,8 @@ type BillableOrder = {
   current_outstanding: string | number;
   projected_exposure: string | number;
   credit_ok: boolean;
+  can_invoice?: boolean;
+  invoice_block_reason?: string | null;
 };
 
 type InvoiceRow = {
@@ -107,11 +100,12 @@ type InvoiceDraft = {
 
 function Invoices() {
   const { firm } = useCompany();
+  const navigate = useNavigate();
+  const { raise } = Route.useSearch();
   const company = firms.find((f) => f.id === firm);
   const [inbox, setInbox] = useState<Billable[]>([]);
   const [orders, setOrders] = useState<BillableOrder[]>([]);
   const [rows, setRows] = useState<InvoiceRow[]>([]);
-  const [selected, setSelected] = useState<Billable | null>(null);
   const [pickOrder, setPickOrder] = useState<BillableOrder | null>(null);
   const [draft, setDraft] = useState<InvoiceDraft | null>(null);
   const [printInv, setPrintInv] = useState<InvoiceRow | null>(null);
@@ -123,6 +117,9 @@ function Invoices() {
   const [status, setStatus] = useState("all");
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [month, setMonth] = useState("all");
+  const [readyQ, setReadyQ] = useState("");
+  const [readyCredit, setReadyCredit] = useState("all");
+  const raisedFromPopup = useRef<string | null>(null);
 
   async function load() {
     try {
@@ -156,6 +153,20 @@ function Invoices() {
     });
   }, [rows, q, status, overdueOnly, month]);
 
+  const readyVisible = useMemo(() => {
+    const needle = readyQ.trim().toLowerCase();
+    return orders.filter((o) => {
+      if (readyCredit === "ok" && !o.credit_ok) return false;
+      if (readyCredit === "exceeded" && o.credit_ok) return false;
+      if (!needle) return true;
+      return `${o.customer_name} ${o.company_name || ""} SO-${o.sales_order_id} ${o.ops_status} ${o.logistics_status || ""}`
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [orders, readyQ, readyCredit]);
+
+  const readyFiltersActive = Boolean(readyQ.trim()) || readyCredit !== "all";
+
   const draftEst = useMemo(() => {
     if (!draft) return 0;
     return draft.lines.reduce((sum, ln) => {
@@ -174,24 +185,45 @@ function Invoices() {
       type So = {
         id: number;
         lines: { product_id: number; quantity: number; unit_price: number }[];
+        notes?: string | null;
+        delivery_mode?: string | null;
+        vehicle?: string | null;
+        driver_name?: string | null;
+        planned_slot?: string | null;
+        planned_on_date?: string | null;
       };
       type Prod = { id: number; name: string; gst_rate?: string | number };
-      const [sos, products] = await Promise.all([
-        api<So[]>("/api/v1/sales-orders"),
-        api<Prod[]>("/api/v1/products").catch(() => [] as Prod[]),
+      type Cust = { id: number; credit_days?: number | null };
+      const [sos, products, nextNo, customers] = await Promise.all([
+        api<So[]>("/api/v1/sales-orders", { companyId: o.company_id }),
+        api<Prod[]>("/api/v1/products", { companyId: o.company_id }).catch(() => [] as Prod[]),
+        api<{ number: string }>("/api/v1/invoices/next-number", { companyId: o.company_id }).catch(() => ({
+          number: "",
+        })),
+        api<Cust[]>("/api/v1/customers", { companyId: o.company_id }).catch(() => [] as Cust[]),
       ]);
       const so = sos.find((x) => x.id === o.sales_order_id);
       const names = Object.fromEntries(products.map((p) => [p.id, p]));
+      const cust = customers.find((c) => c.id === o.customer_id);
       const today = new Date().toISOString().slice(0, 10);
-      const creditDays = 30;
+      const creditDays = cust?.credit_days && cust.credit_days > 0 ? cust.credit_days : 30;
       const due = new Date();
       due.setDate(due.getDate() + creditDays);
-      setPickOrder(o);
+      const deliveryMode = o.delivery_mode || so?.delivery_mode || null;
+      const vehicle = o.vehicle || so?.vehicle || null;
+      const driverName = o.driver_name || so?.driver_name || null;
+      const enriched: BillableOrder = {
+        ...o,
+        delivery_mode: deliveryMode || o.delivery_mode,
+        vehicle,
+        driver_name: driverName,
+      };
+      setPickOrder(enriched);
       setDraft({
         invoice_date: today,
         due_date: due.toISOString().slice(0, 10),
         credit_days: String(creditDays),
-        number: "",
+        number: nextNo.number || "",
         remarks: "",
         lines: (so?.lines || []).map((ln) => {
           const p = names[ln.product_id];
@@ -211,20 +243,16 @@ function Invoices() {
     }
   }
 
-  async function generate() {
-    if (!selected) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api(`/api/v1/invoices/from-dispatch/${selected.dispatch_id}`, { method: "POST" });
-      setSelected(null);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not generate invoice");
-    } finally {
-      setBusy(false);
-    }
-  }
+  useEffect(() => {
+    if (!raise || !orders.length || busy || pickOrder) return;
+    if (raisedFromPopup.current === raise) return;
+    const o = orders.find((x) => String(x.sales_order_id) === raise);
+    if (!o) return;
+    raisedFromPopup.current = raise;
+    void openInvoiceForm(o).then(() => {
+      void navigate({ to: "/invoices", search: {}, replace: true });
+    });
+  }, [raise, orders, busy, pickOrder, navigate]);
 
   async function generateFromOrder(override = false) {
     if (!pickOrder || !draft) return;
@@ -241,6 +269,7 @@ function Invoices() {
     try {
       await api(`/api/v1/invoices/from-order/${pickOrder.sales_order_id}?override_credit=${override}`, {
         method: "POST",
+        companyId: pickOrder.company_id,
         body: JSON.stringify({
           invoice_date: draft.invoice_date,
           due_date: draft.due_date,
@@ -267,7 +296,10 @@ function Invoices() {
 
   async function sendInvoice(row: InvoiceRow, via: "whatsapp" | "email") {
     try {
-      await api(`/api/v1/invoices/${row.id}/send?via=${via}`, { method: "POST" });
+      await api(`/api/v1/invoices/${row.id}/send?via=${via}`, {
+        method: "POST",
+        companyId: row.company_id,
+      });
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not mark sent");
@@ -356,13 +388,223 @@ function Invoices() {
   const invoiced = rows.reduce((a, i) => a + Number(i.total || 0), 0);
   const open = rows.filter((i) => i.status === "open" || i.status === "partial").length;
 
+  if (pickOrder && draft) {
+    return (
+      <>
+        <PageHeader
+          title="Raise invoice"
+          subtitle={`SO-${pickOrder.sales_order_id} · ${pickOrder.customer_name}`}
+        />
+        <button
+          type="button"
+          className="mb-4 text-sm text-primary hover:underline"
+          onClick={() => {
+            setPickOrder(null);
+            setDraft(null);
+          }}
+        >
+          ← Back to invoices
+        </button>
+
+        <div className="mx-auto w-full max-w-3xl space-y-5 pb-8">
+          <div>
+            <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">Company</p>
+            <h2 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+              {pickOrder.company_name || firmLabelByCompanyId(pickOrder.company_id)}
+            </h2>
+          </div>
+
+          <dl className="grid gap-2 sm:grid-cols-2 text-sm">
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+              <dt className="text-xs text-muted-foreground">Customer</dt>
+              <dd className="mt-0.5 font-semibold leading-snug">{pickOrder.customer_name}</dd>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+              <dt className="text-xs text-muted-foreground">Order</dt>
+              <dd className="mt-0.5 font-medium">SO-{pickOrder.sales_order_id}</dd>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5 sm:col-span-2">
+              <dt className="text-xs text-muted-foreground">Delivery</dt>
+              <dd className="mt-0.5 font-medium leading-snug">
+                {pickOrder.delivery_mode === "manufacturer"
+                  ? "Manufacturer — no fleet"
+                  : [pickOrder.vehicle, pickOrder.driver_name].filter(Boolean).join(" · ") || "Own vehicle"}
+              </dd>
+            </div>
+            {pickOrder.address ? (
+              <div className="rounded-xl bg-secondary/60 px-3 py-2.5 sm:col-span-2">
+                <dt className="text-xs text-muted-foreground">Address</dt>
+                <dd className="mt-0.5 text-sm leading-snug">{pickOrder.address}</dd>
+              </div>
+            ) : null}
+            <div className="rounded-xl border border-primary/25 bg-primary/10 px-3 py-3 sm:col-span-2">
+              <dt className="text-xs text-muted-foreground">Invoice number (auto)</dt>
+              <dd className="mt-0.5 text-xl font-semibold tabular-nums tracking-tight">
+                {draft.number || "Will assign on raise"}
+              </dd>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+              <dt className="text-xs text-muted-foreground">Est. total</dt>
+              <dd className="mt-0.5 font-semibold tabular-nums">{money(draftEst || pickOrder.estimated_total)}</dd>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+              <dt className="text-xs text-muted-foreground">Credit</dt>
+              <dd className="mt-0.5">
+                <Badge tone={pickOrder.credit_ok ? "good" : "bad"}>
+                  {pickOrder.credit_ok ? "Within limit" : "Limit exceeded"}
+                </Badge>
+              </dd>
+            </div>
+          </dl>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="text-xs text-muted-foreground">
+              Invoice date
+              <input
+                type="date"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                value={draft.invoice_date}
+                onChange={(e) => setDraft({ ...draft, invoice_date: e.target.value })}
+              />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              Due date
+              <input
+                type="date"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                value={draft.due_date}
+                onChange={(e) => setDraft({ ...draft, due_date: e.target.value })}
+              />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              Credit days
+              <input
+                type="number"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                value={draft.credit_days}
+                onChange={(e) => {
+                  const days = e.target.value;
+                  const next = { ...draft, credit_days: days };
+                  const n = Number(days);
+                  if (Number.isFinite(n) && n >= 0 && draft.invoice_date) {
+                    const d = new Date(draft.invoice_date);
+                    d.setDate(d.getDate() + n);
+                    next.due_date = d.toISOString().slice(0, 10);
+                  }
+                  setDraft(next);
+                }}
+              />
+            </label>
+          </div>
+
+          <label className="block text-xs text-muted-foreground">
+            Remarks / notes
+            <textarea
+              className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+              rows={2}
+              value={draft.remarks}
+              onChange={(e) => setDraft({ ...draft, remarks: e.target.value })}
+              placeholder="Any Accounts notes for this bill"
+            />
+          </label>
+
+          <div className="space-y-3">
+            <div className="flex items-baseline justify-between gap-2">
+              <p className="text-sm font-medium">Lines</p>
+              <p className="text-xs text-muted-foreground">Qty and rate from the order — edit GST only</p>
+            </div>
+            {draft.lines.map((ln, idx) => {
+              const qty = Number(ln.quantity) || 0;
+              const price = Number(ln.unit_price) || 0;
+              const gst = Number(ln.gst_rate) || 0;
+              const lineSub = qty * price;
+              const lineTotal = lineSub + (lineSub * gst) / 100;
+              return (
+                <div key={ln.product_id} className="rounded-xl border border-border bg-card p-3 sm:p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-medium text-foreground">{ln.product_name}</p>
+                    <p className="shrink-0 text-sm font-semibold tabular-nums">{money(lineTotal)}</p>
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <div className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">Qty</span>
+                      <p className="min-h-11 rounded-lg border border-transparent bg-secondary/60 px-2 py-2 text-sm font-medium tabular-nums text-foreground">
+                        {ln.quantity}
+                      </p>
+                    </div>
+                    <div className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">Rate</span>
+                      <p className="min-h-11 rounded-lg border border-transparent bg-secondary/60 px-2 py-2 text-sm font-medium tabular-nums text-foreground">
+                        {ln.unit_price}
+                      </p>
+                    </div>
+                    <label className="block text-xs text-muted-foreground">
+                      <span className="mb-1 block">GST %</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        className="min-h-11 w-full rounded-lg border border-border bg-background px-2 py-2 text-sm font-medium text-foreground outline-none ring-offset-background focus:border-primary focus:ring-2 focus:ring-primary/30"
+                        value={ln.gst_rate}
+                        onChange={(e) => {
+                          const next = e.target.value.replace(/[^\d.]/g, "");
+                          const lines = draft.lines.map((row, i) =>
+                            i === idx ? { ...row, gst_rate: next } : row,
+                          );
+                          setDraft({ ...draft, lines });
+                        }}
+                        onFocus={(e) => e.currentTarget.select()}
+                      />
+                    </label>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-primary/10 px-4 py-3">
+            <span className="font-medium text-muted-foreground">Total incl. GST</span>
+            <span className="text-xl font-semibold tabular-nums">{money(draftEst)}</span>
+          </div>
+          {!pickOrder.credit_ok && (
+            <p className="text-xs text-destructive">
+              Projected {money(pickOrder.projected_exposure)} vs limit {money(pickOrder.credit_limit)}.
+            </p>
+          )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <div className="sticky bottom-0 flex gap-2 border-t border-border bg-background/95 py-3 backdrop-blur sm:static sm:border-0 sm:bg-transparent sm:py-0 sm:backdrop-blur-none">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void generateFromOrder(!pickOrder.credit_ok)}
+              className="flex-1 rounded-xl bg-primary py-3 text-sm font-medium text-primary-foreground disabled:opacity-60"
+            >
+              {busy ? "Creating…" : pickOrder.credit_ok ? "Raise invoice" : "Raise anyway"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPickOrder(null);
+                setDraft(null);
+              }}
+              className="rounded-xl border border-border px-5 py-3 text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <PageHeader
         title="Invoices"
         subtitle="Ready to invoice shows orders after Supervisor confirmed/added the vehicle. Enter bill details, then raise the invoice. After that book the driver on Order desk."
       />
-      {error && !selected && !pickOrder && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
+      {error && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
       <div className="grid gap-4 sm:grid-cols-4">
         <Kpi label="Dispatch inbox" value={String(inbox.length)} meta="Loads Accounts can see" />
@@ -371,15 +613,61 @@ function Invoices() {
         <Kpi label="Awaiting payment" value={String(open)} tone="warn" />
       </div>
 
-      <Panel title="Ready to invoice" hint="Enter invoice date, due date, rates and remarks, then raise the bill" className="mt-6">
-        <Table head={["Order", "Customer", "Lines", "Est. total", "Stage", "Credit", ""]}>
-          {orders.map((o) => (
+      <Panel
+        title="Ready to invoice"
+        hint={
+          readyFiltersActive
+            ? `Showing ${readyVisible.length} of ${orders.length}`
+            : "Owner approved · manufacturer ready anytime · own vehicle only after truck + driver assigned"
+        }
+        className="mt-6"
+      >
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <input
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2 lg:col-span-2"
+            placeholder="Search order, customer, company"
+            value={readyQ}
+            onChange={(e) => setReadyQ(e.target.value)}
+          />
+          <select
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            value={readyCredit}
+            onChange={(e) => setReadyCredit(e.target.value)}
+          >
+            <option value="all">All credit</option>
+            <option value="ok">Within limit</option>
+            <option value="exceeded">Limit exceeded</option>
+          </select>
+        </div>
+        {readyFiltersActive && (
+          <button
+            type="button"
+            className="mb-3 text-sm text-primary hover:underline"
+            onClick={() => {
+              setReadyQ("");
+              setReadyCredit("all");
+            }}
+          >
+            Clear filters
+          </button>
+        )}
+        <Table head={["Company", "Order", "Customer", "Delivery", "Est. total", "Credit", ""]}>
+          {readyVisible.map((o) => (
             <tr key={o.sales_order_id}>
+              <Td className="text-muted-foreground">{o.company_name || firmLabelByCompanyId(o.company_id)}</Td>
               <Td className="font-medium">SO-{o.sales_order_id}</Td>
               <Td>{o.customer_name}</Td>
-              <Td className="tabular-nums">{o.line_count}</Td>
+              <Td className="text-sm">
+                {o.delivery_mode === "manufacturer" ? (
+                  <span className="text-muted-foreground">Manufacturer</span>
+                ) : (
+                  <span>
+                    {o.vehicle || "Own vehicle"}
+                    {o.driver_name ? ` · ${o.driver_name}` : ""}
+                  </span>
+                )}
+              </Td>
               <Td className="tabular-nums">{money(o.estimated_total)}</Td>
-              <Td className="capitalize">{(o.logistics_status || o.ops_status).replaceAll("_", " ")}</Td>
               <Td>
                 <Badge tone={o.credit_ok ? "good" : "bad"}>{o.credit_ok ? "Within limit" : "Limit exceeded"}</Badge>
               </Td>
@@ -490,29 +778,20 @@ function Invoices() {
                   >
                     PDF
                   </button>
-                  {i.phone ? (
-                    <a
-                      href={`${waHref(i.phone)}?text=${encodeURIComponent(`Invoice ${i.number} dated ${i.invoice_date}. Amount ${money(i.total)}. Due ${i.due_date || ""}.`)}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-sm text-primary hover:underline"
-                      onClick={() => void sendInvoice(i, "whatsapp")}
-                    >
-                      WhatsApp
-                    </a>
-                  ) : (
-                    <button type="button" className="text-sm text-primary hover:underline" onClick={() => void sendInvoice(i, "whatsapp")}>
-                      Send
-                    </button>
-                  )}
-                  <button type="button" className="text-sm text-primary hover:underline" onClick={() => void sendInvoice(i, "email")}>
-                    Email
+                  <button
+                    type="button"
+                    className="text-sm text-primary hover:underline"
+                    onClick={() => void downloadInvoicePdf(i)}
+                  >
+                    Download PDF
                   </button>
-                  {Number(i.outstanding) > 0 && i.status !== "cancelled" && (
-                    <Link to="/payments" className="text-sm text-primary hover:underline">
-                      Payment
-                    </Link>
-                  )}
+                  <button
+                    type="button"
+                    className="text-sm text-primary hover:underline"
+                    onClick={() => void shareInvoiceWhatsApp(i)}
+                  >
+                    WhatsApp
+                  </button>
                 </div>
               </Td>
             </tr>
@@ -522,7 +801,7 @@ function Invoices() {
         {!visible.length && <p className="mt-3 text-sm text-muted-foreground">No invoices match these filters.</p>}
       </Panel>
 
-      {selected && (
+      {printInv && pdfUrl && (
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
           <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={() => setSelected(null)} />
           <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl">

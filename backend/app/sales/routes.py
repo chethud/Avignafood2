@@ -22,10 +22,27 @@ from app.core.models import (
     SalesOrderLine,
     SalesOrderStatus,
     StockBalance,
+    User,
     Vehicle,
     VehicleSlot,
     Warehouse,
 )
+
+# After Accounts invoices: only Sales / Supervisor allot the truck (Owner/Admin override).
+ALLOT_ROLES = {
+    RoleName.SALES,
+    RoleName.SUPERVISOR,
+    RoleName.OWNER,
+    RoleName.SUPER_ADMIN,
+}
+
+
+def _require_allot_role(auth: AuthContext) -> None:
+    if auth.role not in ALLOT_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Only Sales or Supervisor can allot a driver after Accounts raises the invoice",
+        )
 from app.core.schemas import (
     AllocateDispatchIn,
     ConfirmVehicleIn,
@@ -136,14 +153,27 @@ def _out(so: SalesOrder, warnings: list[str] | None = None, customer_name: str |
                 "outstanding_qty": float(getattr(ln, "outstanding_qty", 0) or 0),
             }
             for ln in so.lines
-        ],
+        ]
+    v_label, d_label = delivery_labels(db, so) if db else (None, None)
+    return SalesOrderOut(
+        id=so.id,
+        company_id=so.company_id,
+        company_name=company_name,
+        customer_id=so.customer_id,
+        quotation_id=so.quotation_id,
+        warehouse_id=so.warehouse_id,
+        status=so.status.value,
+        notes=so.notes,
+        lines=lines_out,
         stock_warnings=warnings or [],
         ops_status=getattr(so, "ops_status", None) or "pending_approval",
         customer_name=customer_name,
+        created_by_id=so.created_by_id,
+        created_by_name=created_by_name,
         created_at=so.created_at,
         confirmed_at=so.confirmed_at,
         logistics_status=logistics_status,
-        vehicle=vehicle,
+        vehicle=vehicle or v_label,
         eta=eta,
         delivery_mode=normalize_delivery_mode(getattr(so, "delivery_mode", None)) or "own_vehicle",
         planned_vehicle_id=getattr(so, "planned_vehicle_id", None),
@@ -159,15 +189,16 @@ def list_orders(
     auth: AuthContext = Depends(require_perms("sales.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     ensure_sales_schema(engine)
-    rows = (
+    q = (
         db.query(SalesOrder)
         .options(joinedload(SalesOrder.lines))
-        .filter(SalesOrder.company_id == company_id, SalesOrder.organization_id == auth.organization_id)
-        .order_by(SalesOrder.id.desc())
-        .all()
+        .filter(SalesOrder.organization_id == auth.organization_id)
     )
+    if company_id is not None:
+        q = q.filter(SalesOrder.company_id == company_id)
+    rows = q.order_by(SalesOrder.id.desc()).all()
     names = {
         c.id: c.name
         for c in db.query(Customer).filter(Customer.id.in_({r.customer_id for r in rows} or {0})).all()
@@ -180,7 +211,7 @@ def list_outstanding_delivery(
     auth: AuthContext = Depends(require_perms("sales.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     return outstanding_rows(db, company_id=company_id, org_id=auth.organization_id)
 
 
@@ -192,11 +223,10 @@ def order_desk(
     """Order desk: pending vehicle confirm, then invoiced orders for stock + truck booking."""
     company_id = auth.require_company()
     ensure_sales_schema(engine)
-    rows = (
+    q = (
         db.query(SalesOrder)
         .options(joinedload(SalesOrder.lines))
         .filter(
-            SalesOrder.company_id == company_id,
             SalesOrder.organization_id == auth.organization_id,
             or_(
                 (SalesOrder.status == SalesOrderStatus.CONFIRMED)
@@ -204,8 +234,6 @@ def order_desk(
                 SalesOrder.status == SalesOrderStatus.INVOICED,
             ),
         )
-        .order_by(SalesOrder.id.desc())
-        .all()
     )
 
     changed = False
@@ -481,10 +509,21 @@ def verify_stock(
     if so.status != SalesOrderStatus.INVOICED:
         raise HTTPException(status_code=400, detail="Accounts must raise the invoice before stock confirm")
     lines = line_stock(db, so.warehouse_id, so.lines)
-    so.ops_status = "ready" if all(ln.ok for ln in lines) else "shortage"
-    if so.ops_status == "ready":
-        for ln in so.lines:
-            ln.outstanding_qty = Decimal("0")
+    stock_ok = all(ln.ok for ln in lines)
+    # Keep allocated/dispatched if truck was published to the driver after Owner approve.
+    prior = so.ops_status or ""
+    if prior in ("allocated", "dispatched"):
+        if not stock_ok:
+            so.ops_status = "shortage"
+        elif stock_ok:
+            for ln in so.lines:
+                ln.outstanding_qty = Decimal("0")
+            # leave ops_status as allocated/dispatched
+    else:
+        so.ops_status = "ready" if stock_ok else "shortage"
+        if so.ops_status == "ready":
+            for ln in so.lines:
+                ln.outstanding_qty = Decimal("0")
     write_audit(
         db,
         action="verify_stock",
@@ -506,8 +545,18 @@ def fulfill_outstanding(
     db: Session = Depends(get_db),
 ):
     """After new stock arrives, clear remaining delivery on this order."""
-    company_id = auth.require_company()
-    so = _load_so(db, company_id, auth.organization_id, order_id)
+    company_id = auth.company_or_all()
+    if company_id is None:
+        so = (
+            db.query(SalesOrder)
+            .options(joinedload(SalesOrder.lines))
+            .filter(SalesOrder.id == order_id, SalesOrder.organization_id == auth.organization_id)
+            .first()
+        )
+        if not so:
+            raise HTTPException(status_code=404, detail="Sales order not found")
+    else:
+        so = _load_so(db, company_id, auth.organization_id, order_id)
     for ln in so.lines:
         need = ln.outstanding_qty or Decimal("0")
         if need <= 0:
@@ -522,14 +571,15 @@ def fulfill_outstanding(
             )
         ln.outstanding_qty = Decimal("0")
     if all((ln.outstanding_qty or Decimal("0")) <= 0 for ln in so.lines):
-        so.ops_status = "ready"
+        if (so.ops_status or "") not in ("allocated", "dispatched"):
+            so.ops_status = "ready"
     write_audit(
         db,
         action="fulfill_outstanding",
         entity_type="sales_order",
         entity_id=so.id,
         organization_id=auth.organization_id,
-        company_id=company_id,
+        company_id=so.company_id,
         user_id=auth.user.id,
     )
     db.commit()
@@ -726,14 +776,28 @@ def allocate_dispatch(
     """Supervisor or Sales books a READY invoiced order onto a logistics window (driver sees it here)."""
     from app.logistics.routes import assign_order_to_window
 
+    Allowed after Owner approval (CONFIRMED) or after Accounts invoices — stock must be ready.
+    Planning vehicle earlier (without booking a run) uses /plan-delivery.
+    """
+    from app.core.models import Role, User
+    from app.logistics.routes import assign_order_to_window
+    from sqlalchemy.orm import joinedload
+
+    _require_allot_role(auth)
     company_id = auth.require_company()
     so = _load_so(db, company_id, auth.organization_id, order_id)
-    if so.status != SalesOrderStatus.INVOICED:
-        raise HTTPException(status_code=400, detail="Accounts must raise the invoice before assigning a driver")
+    if normalize_delivery_mode(getattr(so, "delivery_mode", None)) == "manufacturer":
+        raise HTTPException(status_code=400, detail="Manufacturer delivery — no vehicle allotment needed")
+    if so.status not in (SalesOrderStatus.INVOICED, SalesOrderStatus.CONFIRMED):
+        raise HTTPException(status_code=400, detail="Owner must approve the order before assigning a driver")
     if (so.ops_status or "") != "ready":
         raise HTTPException(status_code=400, detail="Verify stock (and receive purchase if short) before assigning")
     if body.slot not in ("morning", "afternoon", "evening"):
         raise HTTPException(status_code=400, detail="Slot must be morning, afternoon or evening")
+    if not body.vehicle_id:
+        raise HTTPException(status_code=400, detail="Select a vehicle first")
+    if not body.driver_user_id:
+        raise HTTPException(status_code=400, detail="Select a logistics driver after the vehicle")
 
     lines = line_stock(db, so.warehouse_id, so.lines)
     if not all(ln.ok for ln in lines):
@@ -760,8 +824,32 @@ def allocate_dispatch(
             .order_by(Vehicle.id)
             .first()
         )
+        .first()
+    )
     if not veh:
-        raise HTTPException(status_code=400, detail="No vehicle in fleet")
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    driver = (
+        db.query(User)
+        .options(joinedload(User.role))
+        .filter(
+            User.id == body.driver_user_id,
+            User.organization_id == auth.organization_id,
+            User.is_active.is_(True),
+        )
+        .first()
+    )
+    if not driver or driver.role.name != RoleName.LOGISTICS:
+        raise HTTPException(status_code=400, detail="Pick an active logistics driver account")
+
+    apply_delivery_plan(
+        so,
+        delivery_mode="own_vehicle",
+        planned_vehicle_id=body.vehicle_id,
+        planned_driver_user_id=body.driver_user_id,
+        planned_slot=body.slot,
+        planned_on_date=body.on_date,
+    )
 
     apply_delivery_plan(so, delivery_mode="own_vehicle", planned_vehicle_id=veh.id, planned_slot=body.slot, planned_on_date=body.on_date)
 
@@ -774,6 +862,7 @@ def allocate_dispatch(
         slot=body.slot,
         veh=veh,
         user_id=auth.user.id,
+        driver_name=driver.full_name,
     )
     write_audit(
         db,
@@ -800,6 +889,7 @@ def reassign_vehicle(
     from app.core.models import LogisticsRun, LogisticsStop
     from app.logistics.routes import BOOKED_RUN, _set_slot
 
+    _require_allot_role(auth)
     company_id = auth.require_company()
     so = _load_so(db, company_id, auth.organization_id, order_id)
     if (so.ops_status or "") != "allocated":
@@ -841,12 +931,30 @@ def reassign_vehicle(
     if not veh:
         raise HTTPException(status_code=404, detail="Vehicle not found")
 
+    driver_name = None
+    if body.driver_user_id:
+        from sqlalchemy.orm import joinedload
+
+        driver = (
+            db.query(User)
+            .options(joinedload(User.role))
+            .filter(
+                User.id == body.driver_user_id,
+                User.organization_id == auth.organization_id,
+                User.is_active.is_(True),
+            )
+            .first()
+        )
+        if not driver or driver.role.name != RoleName.LOGISTICS:
+            raise HTTPException(status_code=400, detail="Pick an active logistics driver account")
+        driver_name = driver.full_name
+
     old_vehicle_id = run.vehicle_id
     slot = getattr(run, "slot", None) or "afternoon"
     if old_vehicle_id and old_vehicle_id != veh.id:
         _set_slot(db, old_vehicle_id, run.on_date, slot, "free")
     run.vehicle_id = veh.id
-    run.driver_name = veh.driver_name or run.driver_name
+    run.driver_name = driver_name or run.driver_name
     _set_slot(db, veh.id, run.on_date, slot, "booked")
 
     load = (
@@ -868,7 +976,7 @@ def reassign_vehicle(
         organization_id=auth.organization_id,
         company_id=company_id,
         user_id=auth.user.id,
-        detail=f"run={run.number} vehicle={veh.plate}",
+        detail=f"run={run.number} vehicle={veh.plate} driver={run.driver_name}",
     )
     db.commit()
     return desk_out(db, so)

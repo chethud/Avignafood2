@@ -9,7 +9,7 @@ from app.core.deps import AuthContext, require_owner, require_perms
 from app.core.models import Customer, Lead, LeadStatus, Product, Quotation, QuotationLine, QuotationStatus
 from app.core.schemas import QuotationCreate, QuotationOut
 from app.sales.ensure_schema import ensure_sales_schema
-from app.sales.ops import open_confirmed_from_quotation
+from app.sales.ops import apply_delivery_plan, open_confirmed_from_quotation
 
 router = APIRouter(prefix="/quotations", tags=["quotations"])
 
@@ -36,6 +36,11 @@ def _out(q: Quotation, customer_name: str | None = None) -> QuotationOut:
         customer_name=customer_name,
         below_floor=below,
         needs_approval=q.status == QuotationStatus.PENDING_APPROVAL,
+        delivery_mode=getattr(q, "delivery_mode", None) or "own_vehicle",
+        planned_vehicle_id=getattr(q, "planned_vehicle_id", None),
+        planned_driver_user_id=getattr(q, "planned_driver_user_id", None),
+        planned_slot=getattr(q, "planned_slot", None),
+        planned_on_date=getattr(q, "planned_on_date", None),
     )
 
 
@@ -44,14 +49,15 @@ def list_quotations(
     auth: AuthContext = Depends(require_perms("quotations.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    rows = (
+    company_id = auth.company_or_all()
+    q = (
         db.query(Quotation)
         .options(joinedload(Quotation.lines))
-        .filter(Quotation.company_id == company_id, Quotation.organization_id == auth.organization_id)
-        .order_by(Quotation.id.desc())
-        .all()
+        .filter(Quotation.organization_id == auth.organization_id)
     )
+    if company_id is not None:
+        q = q.filter(Quotation.company_id == company_id)
+    rows = q.order_by(Quotation.id.desc()).all()
     names = {
         c.id: c.name
         for c in db.query(Customer).filter(Customer.id.in_({r.customer_id for r in rows} or {0})).all()

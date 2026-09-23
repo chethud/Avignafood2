@@ -34,6 +34,7 @@ from app.core.schemas import (
     LogisticsStatusIn,
     LogisticsStopOut,
     ReadyOrderOut,
+    InvoiceOut,
 )
 
 router = APIRouter(prefix="/logistics", tags=["logistics"])
@@ -42,7 +43,7 @@ SLOTS = ("morning", "afternoon", "evening")
 SLOT_LABEL = {"morning": "Morning", "afternoon": "Afternoon", "evening": "Evening"}
 
 RUN_NEXT = {
-    "planned": ("loaded", "dispatched", "going"),
+    "planned": ("loading", "loaded", "dispatched", "going"),
     "loading": ("loaded", "dispatched", "going"),
     "loaded": ("dispatched", "going"),
     "dispatched": ("in_transit", "out_for_delivery", "returning"),
@@ -238,6 +239,7 @@ def _run_out(db: Session, run: LogisticsRun) -> LogisticsRunOut:
         live = "idle"
     return LogisticsRunOut(
         id=run.id,
+        company_id=run.company_id,
         number=run.number,
         on_date=run.on_date,
         slot=getattr(run, "slot", None) or "afternoon",
@@ -307,13 +309,36 @@ def assign_order_to_window(
     slot: str,
     veh: Vehicle | None,
     user_id: int | None,
+    driver_name: str | None = None,
+    require_ready: bool = True,
 ) -> LogisticsRun:
-    """Supervisor assigns a READY order to a morning/afternoon/evening run."""
+    """Assign order to a logistics window (vehicle + driver).
+
+    require_ready=True: stock must be READY (classic Order desk allot).
+    require_ready=False: Owner-approved order with planned truck — visible to driver
+    even before Accounts invoices / stock verify.
+    """
     slot = (slot or "afternoon").lower()
     if slot not in SLOTS:
         raise HTTPException(status_code=400, detail="Window must be morning, afternoon or evening")
-    if (so.ops_status or "") != "ready":
-        raise HTTPException(status_code=400, detail="Only READY orders can be assigned to logistics")
+    status = so.status if hasattr(so.status, "value") else so.status
+    status_val = status.value if hasattr(status, "value") else str(status)
+    if require_ready:
+        if (so.ops_status or "") != "ready":
+            raise HTTPException(status_code=400, detail="Only READY orders can be assigned to logistics")
+    else:
+        if status_val not in ("confirmed", "invoiced"):
+            raise HTTPException(
+                status_code=400,
+                detail="Owner must approve the order before the driver can see this assignment",
+            )
+        mode = (getattr(so, "delivery_mode", None) or "own_vehicle")
+        mode = str(mode).strip().lower().replace("-", "_").replace(" ", "_")
+        if mode in ("manufacturer", "manufactor", "manuvacture", "manufacture"):
+            raise HTTPException(status_code=400, detail="Manufacturer delivery — no fleet assignment")
+    driver = (driver_name or "").strip() or (veh.driver_name if veh else None) or None
+    if not driver:
+        raise HTTPException(status_code=400, detail="Select a logistics driver after the vehicle")
     taken = (
         db.query(LogisticsStop)
         .join(LogisticsRun, LogisticsRun.id == LogisticsStop.run_id)
@@ -339,6 +364,9 @@ def assign_order_to_window(
         if veh and match.vehicle_id and match.vehicle_id != veh.id:
             raise HTTPException(status_code=400, detail="That window is already on another vehicle")
         target = match
+        target.driver_name = driver
+        if veh and not target.vehicle_id:
+            target.vehicle_id = veh.id
     else:
         if _window_taken(db, org_id, on_date, slot):
             raise HTTPException(status_code=400, detail=f"{SLOT_LABEL[slot]} is already booked")
@@ -351,7 +379,7 @@ def assign_order_to_window(
             on_date=on_date,
             slot=slot,
             vehicle_id=veh.id if veh else None,
-            driver_name=(veh.driver_name if veh else None) or "Ravi Kumar",
+            driver_name=driver,
             agency="Own Vehicle",
             status="planned",
             created_by_id=user_id,
@@ -423,6 +451,8 @@ def ready_orders(
     )
     out: list[ReadyOrderOut] = []
     for so in rows:
+        if (getattr(so, "delivery_mode", None) or "own_vehicle") == "manufacturer":
+            continue
         if so.id in taken:
             continue
         customer = db.query(Customer).filter(Customer.id == so.customer_id).first()
@@ -449,23 +479,68 @@ def ready_orders(
 def list_runs(
     on_date: date | None = Query(None),
     open_only: bool = Query(False, description="Open assignments for drivers (any company in org)"),
+    history_only: bool = Query(False, description="Completed / delivered trips for driver history"),
     auth: AuthContext = Depends(require_perms("dispatch.view")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
+    # Drivers (and open/history) see every allotted run in the org; others stay company-scoped
+    if auth.role == RoleName.LOGISTICS or open_only or history_only:
+        company_id = auth.company_or_all()
+    else:
+        company_id = auth.require_company()
     q = (
         db.query(LogisticsRun)
         .options(joinedload(LogisticsRun.stops))
         .filter(LogisticsRun.organization_id == auth.organization_id)
     )
-    # Drivers need every allotted run in the org; Sales/Supervisor stay company-scoped
-    if auth.role != RoleName.LOGISTICS and not open_only:
+    if auth.role != RoleName.LOGISTICS and not open_only and not history_only and company_id is not None:
         q = q.filter(LogisticsRun.company_id == company_id)
+    elif (
+        company_id is not None
+        and auth.role != RoleName.LOGISTICS
+        and (open_only or history_only)
+    ):
+        q = q.filter(LogisticsRun.company_id == company_id)
+    if history_only:
+        from sqlalchemy import or_, exists
+
+        done_stop = exists().where(
+            LogisticsStop.run_id == LogisticsRun.id,
+            LogisticsStop.status.in_(("delivered", "partial", "failed")),
+        )
+        q = q.filter(
+            or_(
+                LogisticsRun.status.in_(("completed", "delivered", "cancelled")),
+                done_stop,
+            )
+        )
+        rows = q.order_by(LogisticsRun.on_date.desc(), LogisticsRun.id.desc()).limit(100).all()
+        return [_run_out(db, r) for r in rows]
     if open_only:
-        q = q.filter(LogisticsRun.status.in_(OPEN_RUN + ("delivered",)))
+        q = q.filter(LogisticsRun.status.in_(OPEN_RUN))
     elif on_date:
         q = q.filter(LogisticsRun.on_date == on_date)
-    rows = q.order_by(LogisticsRun.on_date.asc(), LogisticsRun.id.desc()).all()
+    rows = q.order_by(LogisticsRun.on_date.asc(), LogisticsRun.id.asc()).all()
+    # Drivers must not see drops for orders still waiting Owner approval (draft).
+    if open_only or auth.role == RoleName.LOGISTICS:
+        filtered: list[LogisticsRun] = []
+        for run in rows:
+            keep_stops = []
+            for stop in run.stops or []:
+                so = db.query(SalesOrder).filter(SalesOrder.id == stop.sales_order_id).first()
+                if not so:
+                    continue
+                st = so.status.value if hasattr(so.status, "value") else str(so.status)
+                if st in ("confirmed", "invoiced"):
+                    keep_stops.append(stop)
+            if keep_stops:
+                run.stops = keep_stops
+                filtered.append(run)
+            elif not (run.stops or []):
+                # Empty open run (vehicle booked, no stops yet) — keep for desk, hide from open_only drivers
+                if not open_only:
+                    filtered.append(run)
+        rows = filtered
     return [_run_out(db, r) for r in rows]
 
 
@@ -476,8 +551,16 @@ def plan_run(
     db: Session = Depends(get_db),
 ):
     company_id = auth.require_company()
-    if auth.role == RoleName.LOGISTICS:
-        raise HTTPException(status_code=400, detail="Supervisor assigns orders on Order desk")
+    if auth.role not in (
+        RoleName.SALES,
+        RoleName.SUPERVISOR,
+        RoleName.OWNER,
+        RoleName.SUPER_ADMIN,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Only Sales or Supervisor can allot a driver after Accounts raises the invoice",
+        )
     if not body.order_ids:
         raise HTTPException(status_code=400, detail="Pick at least one ready order")
     slot = (body.slot or "afternoon").lower()
@@ -515,6 +598,7 @@ def plan_run(
             slot=slot,
             veh=veh,
             user_id=auth.user.id,
+            driver_name=(body.driver_name or "").strip() or None,
         )
     write_audit(
         db,
@@ -592,13 +676,22 @@ def set_run_status(
     auth: AuthContext = Depends(require_perms("dispatch.edit")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
-    run = (
-        db.query(LogisticsRun)
-        .options(joinedload(LogisticsRun.stops))
-        .filter(LogisticsRun.id == run_id, LogisticsRun.company_id == company_id)
-        .first()
-    )
+    # Logistics may drive a run for any allotted company in the org
+    if auth.role == RoleName.LOGISTICS:
+        run = (
+            db.query(LogisticsRun)
+            .options(joinedload(LogisticsRun.stops))
+            .filter(LogisticsRun.id == run_id, LogisticsRun.organization_id == auth.organization_id)
+            .first()
+        )
+    else:
+        company_id = auth.require_company()
+        run = (
+            db.query(LogisticsRun)
+            .options(joinedload(LogisticsRun.stops))
+            .filter(LogisticsRun.id == run_id, LogisticsRun.company_id == company_id)
+            .first()
+        )
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     wanted = "dispatched" if body.status == "going" else body.status
@@ -609,6 +702,8 @@ def set_run_status(
         _dispatch_run(db, run)
     elif wanted == "loaded":
         run.status = "loaded"
+    elif wanted == "loading":
+        run.status = "loading"
     elif wanted == "returning":
         run.status = "returning"
         _set_vehicle_live(db, run.vehicle_id, "returning")
@@ -785,6 +880,41 @@ def list_windows(
     return {"on_date": on_date.isoformat(), "truck": truck, "windows": windows}
 
 
+@router.get("/stops/{stop_id}/invoice", response_model=InvoiceOut)
+def stop_invoice(
+    stop_id: int,
+    auth: AuthContext = Depends(require_perms("invoices.view")),
+    db: Session = Depends(get_db),
+):
+    """Driver / logistics: view the tax invoice for this drop (by sales order)."""
+    from app.invoices.routes import _out, _product_names
+
+    stop = db.query(LogisticsStop).filter(LogisticsStop.id == stop_id).first()
+    if not stop:
+        raise HTTPException(status_code=404, detail="Stop not found")
+    run = db.query(LogisticsRun).filter(LogisticsRun.id == stop.run_id).first()
+    if not run or run.organization_id != auth.organization_id:
+        raise HTTPException(status_code=404, detail="Stop not found")
+    if auth.role != RoleName.LOGISTICS:
+        scoped = auth.require_company()
+        if run.company_id != scoped:
+            raise HTTPException(status_code=404, detail="Stop not found")
+    inv = (
+        db.query(Invoice)
+        .options(joinedload(Invoice.lines))
+        .filter(
+            Invoice.sales_order_id == stop.sales_order_id,
+            Invoice.organization_id == auth.organization_id,
+        )
+        .order_by(Invoice.id.desc())
+        .first()
+    )
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not raised yet for this order")
+    customer = db.query(Customer).filter(Customer.id == inv.customer_id).first()
+    return _out(inv, customer, _product_names(db, [inv]))
+
+
 @router.post("/stops/{stop_id}/deliver", response_model=LogisticsRunOut)
 def deliver_stop(
     stop_id: int,
@@ -792,13 +922,18 @@ def deliver_stop(
     auth: AuthContext = Depends(require_perms("deliveries.edit")),
     db: Session = Depends(get_db),
 ):
-    company_id = auth.require_company()
     stop = db.query(LogisticsStop).filter(LogisticsStop.id == stop_id).first()
     if not stop:
         raise HTTPException(status_code=404, detail="Stop not found")
     run = db.query(LogisticsRun).options(joinedload(LogisticsRun.stops)).filter(LogisticsRun.id == stop.run_id).first()
-    if not run or run.company_id != company_id:
+    if not run or run.organization_id != auth.organization_id:
         raise HTTPException(status_code=404, detail="Stop not found")
+    company_id = run.company_id
+    if auth.role != RoleName.LOGISTICS:
+        scoped = auth.require_company()
+        if run.company_id != scoped:
+            raise HTTPException(status_code=404, detail="Stop not found")
+        company_id = scoped
     if (run.status or "") not in ("dispatched", "in_transit", "out_for_delivery", "partial"):
         raise HTTPException(status_code=400, detail="Start the run (Going) before recording delivery")
     outcome = body.outcome
@@ -806,6 +941,8 @@ def deliver_stop(
         raise HTTPException(status_code=400, detail="Outcome must be delivered, partial or failed")
     if outcome == "failed" and not (body.fail_reason or "").strip():
         raise HTTPException(status_code=400, detail="Choose a failure reason")
+    if not (body.pod_url or "").strip():
+        raise HTTPException(status_code=400, detail="Photo is required for delivery")
     stop.status = outcome
     stop.receiver_name = body.receiver_name
     stop.pod_url = body.pod_url

@@ -50,7 +50,7 @@ export function SupervisorDashboard() {
         subtitle="After Owner confirms price: confirm or add vehicle on Order desk, then after Accounts invoices confirm stock and book the truck. Driver sees trips only after booking."
       />
 
-      <div className="mb-4 flex gap-2">
+      <div className="mb-4 flex gap-2" data-tour="supervisor-tabs">
         <button
           type="button"
           onClick={() => setTab("overview")}
@@ -73,7 +73,7 @@ export function SupervisorDashboard() {
         <OutstandingDelivery canComplete />
       ) : (
         <>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" data-tour="supervisor-kpis">
         <Kpi
           label="To allot / stock"
           value={data ? String(data.pending_orders) : "—"}

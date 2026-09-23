@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
 import { useMe } from "@/lib/me-context";
-import { approvals, byFirm, inr } from "@/lib/erp-data";
+import { money } from "@/lib/format";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
 import { ApprovalPopup, usePendingApprovals } from "@/components/erp/ApprovalPopup";
 import { cn } from "@/lib/utils";
@@ -11,31 +11,50 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/sales")({
   head: () => ({
     meta: [
-      { title: "Sales & price approvals · Avighna ERP" },
-      { name: "description", content: "Negotiated prices go to the owner for approval in the app instead of over phone calls." },
-      { property: "og:title", content: "Sales & price approvals · Avighna ERP" },
-      { property: "og:description", content: "Approve, reject or counter a negotiated rate in one tap." },
+      { title: "Sales order requests · Avighna ERP" },
+      { name: "description", content: "Super Admin reviews sales order requests including any below-floor rates in one place." },
+      { property: "og:title", content: "Sales order requests · Avighna ERP" },
     ],
   }),
   component: Sales,
 });
 
-type ApprovalRow = (typeof approvals)[number];
+type OrderLine = {
+  id?: number;
+  product_id: number;
+  product_name?: string;
+  unit?: string;
+  quantity: number;
+  unit_price: number;
+  outstanding_qty?: number;
+  on_hand?: number;
+  stock_ok?: boolean;
+  wholesale_price?: number;
+  selling_price?: number;
+  below_wholesale?: boolean;
+};
 
 type Order = {
   id: number;
+  company_id?: number;
+  company_name?: string | null;
   customer_id: number;
   customer_name: string | null;
   status: string;
   ops_status: string;
   quotation_id: number | null;
-  lines: { product_id: number; quantity: number; unit_price: number; outstanding_qty?: number }[];
+  notes?: string | null;
+  lines: OrderLine[];
   stock_warnings: string[];
+  created_by_name?: string | null;
   created_at?: string | null;
   confirmed_at?: string | null;
   logistics_status?: string | null;
   vehicle?: string | null;
   eta?: string | null;
+  delivery_mode?: string;
+  driver_name?: string | null;
+  can_invoice?: boolean;
 };
 
 type ProductOpt = { id: number; name: string; unit: string; base_price: string | number };
@@ -51,6 +70,25 @@ function orderStage(o: Order) {
   if (o.ops_status === "dispatched") return o.logistics_status === "delivered" ? "Delivered" : "With driver";
   if (o.status === "invoiced") return "Invoiced";
   return o.status;
+}
+
+function fmtWhen(value?: string | null) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function lineLabel(ln: OrderLine, products: ProductOpt[]) {
+  return ln.product_name || products.find((p) => p.id === ln.product_id)?.name || `Product #${ln.product_id}`;
+}
+
+function lineUnit(ln: OrderLine, products: ProductOpt[]) {
+  return ln.unit || products.find((p) => p.id === ln.product_id)?.unit || "KG";
+}
+
+function orderTotal(o: Order) {
+  return o.lines.reduce((sum, ln) => sum + Number(ln.quantity || 0) * Number(ln.unit_price || 0), 0);
 }
 
 function isOverdue(o: Order) {
@@ -70,6 +108,7 @@ function SalesWorkspace() {
   const [products, setProducts] = useState<ProductOpt[]>([]);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"normal" | "overdue">("normal");
+  const [open, setOpen] = useState<Order | null>(null);
 
   async function load() {
     const [o, p] = await Promise.all([
@@ -78,6 +117,7 @@ function SalesWorkspace() {
     ]);
     setOrders(o);
     setProducts(p);
+    setOpen((prev) => (prev ? o.find((row) => row.id === prev.id) || null : null));
   }
 
   useEffect(() => {
@@ -129,7 +169,19 @@ function SalesWorkspace() {
       {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
       <ul className="space-y-2">
         {shown.map((o) => (
-          <li key={o.id} className="rounded-2xl border border-border bg-card px-3 py-3">
+          <li
+            key={o.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => setOpen(o)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setOpen(o);
+              }
+            }}
+            className="cursor-pointer rounded-2xl border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-secondary/40"
+          >
             <div className="flex items-start justify-between gap-2">
               <span>
                 <span className="block font-medium">SO-{o.id}</span>
@@ -140,6 +192,14 @@ function SalesWorkspace() {
               </Badge>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">Warehouse: {o.ops_status.replaceAll("_", " ")}</p>
+            {(o.delivery_mode || o.vehicle || o.driver_name) && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Delivery:{" "}
+                {o.delivery_mode === "manufacturer"
+                  ? "Manufacturer"
+                  : [o.vehicle || "Own vehicle", o.driver_name].filter(Boolean).join(" · ")}
+              </p>
+            )}
             {o.logistics_status && (
               <p className="mt-1 text-xs text-muted-foreground">
                 Dispatch: {o.logistics_status.replaceAll("_", " ")}
@@ -152,17 +212,17 @@ function SalesWorkspace() {
                 Outstanding delivery:{" "}
                 {o.lines
                   .filter((ln) => Number(ln.outstanding_qty) > 0)
-                  .map((ln) => {
-                    const p = products.find((x) => x.id === ln.product_id);
-                    return `${Number(ln.outstanding_qty).toLocaleString("en-IN")} ${p?.unit || "KG"} ${p?.name || ""}`.trim();
-                  })
+                  .map((ln) => `${Number(ln.outstanding_qty).toLocaleString("en-IN")} ${lineUnit(ln, products)} ${lineLabel(ln, products)}`.trim())
                   .join(" · ")}
               </p>
             )}
             {o.status === "draft" && o.ops_status !== "pending_approval" && (
               <button
                 type="button"
-                onClick={() => void confirmOrder(o.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void confirmOrder(o.id);
+                }}
                 className="mt-2 rounded-xl border border-border px-3 py-1.5 text-xs"
               >
                 Send to Super Admin
@@ -176,44 +236,169 @@ function SalesWorkspace() {
           </li>
         )}
       </ul>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-foreground/40 p-4 sm:items-center">
+          <button type="button" className="absolute inset-0 cursor-default" aria-label="Close" onClick={() => setOpen(null)} />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sales-order-detail-title"
+            className="relative z-10 max-h-[90dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-border bg-card p-5"
+          >
+            <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">
+              SO-{open.id}
+              {open.company_name ? ` · ${open.company_name}` : ""}
+              {open.quotation_id ? ` · Quote #${open.quotation_id}` : ""}
+            </p>
+            <h2 id="sales-order-detail-title" className="mt-1 text-xl font-semibold tracking-tight">
+              {open.customer_name || `Customer ${open.customer_id}`}
+            </h2>
+            <div className="mt-2">
+              <Badge tone={isOverdue(open) ? "warn" : open.status === "cancelled" ? "bad" : "neutral"}>
+                {isOverdue(open) ? "Overdue" : orderStage(open)}
+              </Badge>
+            </div>
+
+            <dl className="mt-4 space-y-2 text-sm">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Order status</dt>
+                  <dd className="mt-0.5 font-medium capitalize">{open.status.replaceAll("_", " ")}</dd>
+                </div>
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Warehouse</dt>
+                  <dd className="mt-0.5 font-medium capitalize">{open.ops_status.replaceAll("_", " ")}</dd>
+                </div>
+              </div>
+              {(open.logistics_status || open.vehicle || open.eta) && (
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Dispatch</dt>
+                  <dd className="mt-0.5 font-medium capitalize">
+                    {[open.logistics_status?.replaceAll("_", " "), open.vehicle, open.eta ? `expected ${open.eta}` : null]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </dd>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Created</dt>
+                  <dd className="mt-0.5 font-medium">{fmtWhen(open.created_at) || "—"}</dd>
+                </div>
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Confirmed</dt>
+                  <dd className="mt-0.5 font-medium">{fmtWhen(open.confirmed_at) || "—"}</dd>
+                </div>
+              </div>
+              {open.created_by_name && (
+                <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                  <dt className="text-xs text-muted-foreground">Created by</dt>
+                  <dd className="mt-0.5 font-medium">{open.created_by_name}</dd>
+                </div>
+              )}
+              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
+                <dt className="text-xs text-muted-foreground">Order value</dt>
+                <dd className="mt-0.5 font-medium tabular-nums">{money(orderTotal(open))}</dd>
+              </div>
+            </dl>
+
+            <div className="mt-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Lines</p>
+              <ul className="mt-2 space-y-2">
+                {open.lines.map((ln, idx) => (
+                  <li key={ln.id ?? `${ln.product_id}-${idx}`} className="rounded-xl border border-border px-3 py-2.5 text-sm">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-medium">{lineLabel(ln, products)}</span>
+                      <span className="tabular-nums text-muted-foreground">
+                        {money(Number(ln.quantity) * Number(ln.unit_price))}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {Number(ln.quantity).toLocaleString("en-IN")} {lineUnit(ln, products)} × {money(ln.unit_price)}
+                      {ln.on_hand != null ? ` · stock ${Number(ln.on_hand).toLocaleString("en-IN")}` : ""}
+                    </p>
+                    {Number(ln.outstanding_qty) > 0 && (
+                      <p className="mt-1 text-xs font-medium text-warning">
+                        Outstanding {Number(ln.outstanding_qty).toLocaleString("en-IN")} {lineUnit(ln, products)}
+                      </p>
+                    )}
+                    {ln.below_wholesale && (
+                      <p className="mt-1 text-xs text-destructive">Below wholesale {money(ln.wholesale_price || 0)}</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {open.stock_warnings?.length > 0 && (
+              <div className="mt-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm text-warning">
+                {open.stock_warnings.join(" · ")}
+              </div>
+            )}
+            {open.notes && (
+              <p className="mt-3 text-sm text-muted-foreground">Notes: {open.notes}</p>
+            )}
+
+            {open.status === "draft" && open.ops_status !== "pending_approval" ? (
+              <div className="mt-5 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void confirmOrder(open.id)}
+                  className="rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground"
+                >
+                  Send to Super Admin
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(null)}
+                  className="rounded-xl border border-border px-4 py-3 text-sm"
+                >
+                  Close
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setOpen(null)}
+                className="mt-5 w-full rounded-xl border border-border py-3 text-sm"
+              >
+                Close
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
 function OwnerApprovals() {
-  const { firm } = useCompany();
-  const rows = byFirm(approvals, firm);
-  const [decisions, setDecisions] = useState<Record<string, string>>({});
   const [popupOpen, setPopupOpen] = useState(false);
-  const [selected, setSelected] = useState<ApprovalRow | null>(null);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
   const { items, dismiss, canApprove, refresh } = usePendingApprovals();
 
-  const pending = rows.filter((r) => r.status === "Pending" && !decisions[r.id]);
-
-  function statusOf(a: ApprovalRow) {
-    return decisions[a.id] ?? a.status;
-  }
-
-  function decideSelected(action: "Approved" | "Rejected") {
-    if (!selected) return;
-    setDecisions((d) => ({ ...d, [selected.id]: action }));
-    setSelected(null);
-  }
+  const queue = focusKey
+    ? [...items.filter((i) => i.key === focusKey), ...items.filter((i) => i.key !== focusKey)]
+    : items;
 
   return (
     <>
       <PageHeader
-        title="Sales & price approvals"
+        title="Sales order requests"
         subtitle={
           canApprove
-            ? "Sales orders land here for Super Admin approval. After you approve, Accounts raises the invoice — Supervisor does not see the order yet."
+            ? "Review each order here — stock, rates, and below-floor prices are on the same request. After you approve, Accounts raises the invoice."
             : "Sales orders await Super Admin approval."
         }
         action={
           canApprove && items.length > 0 ? (
             <button
               type="button"
-              onClick={() => setPopupOpen(true)}
+              onClick={() => {
+                setFocusKey(null);
+                setPopupOpen(true);
+              }}
               className="rounded-xl bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
             >
               Review {items.length}
@@ -223,208 +408,66 @@ function OwnerApprovals() {
       />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
-        <Kpi label="Awaiting" value={String(items.length || pending.length)} tone={items.length || pending.length ? "warn" : "good"} />
+        <Kpi label="Awaiting" value={String(items.length)} tone={items.length ? "warn" : "good"} />
         <Kpi
-          label="Approved"
-          value={String(rows.filter((r) => r.status === "Approved").length + Object.values(decisions).filter((d) => d === "Approved").length)}
-          tone="good"
+          label="Below floor"
+          value={String(items.filter((i) => (i.lines || []).some((ln) => ln.below_wholesale)).length)}
+          tone={items.some((i) => (i.lines || []).some((ln) => ln.below_wholesale)) ? "warn" : "good"}
         />
-        <Kpi label="Pipeline value" value={inr(rows.length * 1850000)} meta="Est. from quotes" />
+        <Kpi label="Open requests" value={String(items.length)} meta="Order desk" />
       </div>
 
-      {items.filter((i) => i.kind === "order" || i.kind === "quote").length > 0 && (
-        <Panel title="Waiting on Super Admin" hint="Sales created these — approve here, not on Supervisor desk" className="mt-5">
-          <ul className="space-y-3">
-            {items
-              .filter((i) => i.kind === "order" || i.kind === "quote")
-              .map((item) => (
-                <li key={item.key} className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2.5">
-                  <span>
-                    <span className="block font-medium">{item.customer}</span>
-                    <span className="text-sm text-muted-foreground">
-                      {item.kind === "order" ? item.salesperson : "Quote"} · {item.product} · {item.qty}
-                    </span>
+      <Panel
+        title="Waiting on Super Admin"
+        hint="Price exceptions appear inside each order request — not as a separate approval"
+        className="mt-5"
+      >
+        <ul className="space-y-3">
+          {items.map((item) => {
+            const below = (item.lines || []).some((ln) => ln.below_wholesale);
+            return (
+              <li key={item.key} className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2.5">
+                <span>
+                  <span className="block font-medium">{item.customer}</span>
+                  <span className="text-sm text-muted-foreground">
+                    {item.salesperson} · {item.product} · {item.qty}
+                    {below ? " · below floor" : ""}
                   </span>
-                  {canApprove ? (
-                    <button
-                      type="button"
-                      onClick={() => setPopupOpen(true)}
-                      className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
-                    >
-                      Review
-                    </button>
-                  ) : null}
-                </li>
-              ))}
-          </ul>
-        </Panel>
-      )}
-
-      <div className="mt-5 grid gap-3 sm:mt-6 sm:gap-4 lg:grid-cols-2">
-        {rows
-          .filter((r) => r.status === "Pending")
-          .map((a) => {
-            const decided = decisions[a.id];
-            return (
-              <Panel key={a.id} title={a.customer} hint={`${a.raised} · ${a.salesperson}`}>
-                <button type="button" className="w-full text-left" onClick={() => setSelected(a)}>
-                  <dl className="grid grid-cols-2 gap-y-2 text-sm sm:gap-y-3">
-                    <dt className="text-muted-foreground">Product</dt>
-                    <dd className="truncate">{a.product}</dd>
-                    <dt className="text-muted-foreground">Qty</dt>
-                    <dd className="tabular-nums">{a.qty}</dd>
-                    <dt className="text-muted-foreground">Asked</dt>
-                    <dd className="tabular-nums font-medium">{inr(a.askedPrice)}</dd>
-                    <dt className="text-muted-foreground">Floor</dt>
-                    <dd className="tabular-nums">{inr(a.floorPrice)}</dd>
-                  </dl>
-                </button>
-                {decided ? (
-                  <p className="mt-3 text-sm sm:mt-4">
-                    <Badge tone={decided === "Approved" ? "good" : decided === "Rejected" ? "bad" : "warn"}>{decided}</Badge>
-                  </p>
-                ) : canApprove ? (
-                  <div className="mt-4 flex flex-col gap-2 sm:mt-5 sm:flex-row sm:flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => setSelected(a)}
-                      className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground"
-                    >
-                      Open
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDecisions((d) => ({ ...d, [a.id]: "Approved" }))}
-                      className="rounded-lg border border-border px-4 py-2.5 text-sm hover:bg-secondary"
-                    >
-                      Quick approve
-                    </button>
-                  </div>
+                </span>
+                {canApprove ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFocusKey(item.key);
+                      setPopupOpen(true);
+                    }}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
+                  >
+                    Review order
+                  </button>
                 ) : (
-                  <p className="mt-3 text-sm text-muted-foreground sm:mt-4">
-                    <Badge tone="warn">Awaiting owner approval</Badge>
-                  </p>
+                  <Badge tone="warn">Awaiting</Badge>
                 )}
-              </Panel>
+              </li>
             );
           })}
-      </div>
-
-      <Panel title="Recent decisions" hint="Tap a row" className="mt-5 sm:mt-6">
-        <Table head={["Request", "Customer", "Product", "Qty", "Rate", "Rep", "Status"]}>
-          {rows.map((a) => {
-            const st = statusOf(a);
-            return (
-              <tr
-                key={a.id}
-                className="cursor-pointer hover:bg-secondary/40"
-                onClick={() => setSelected(a)}
-              >
-                <Td className="font-medium">{a.id}</Td>
-                <Td>{a.customer}</Td>
-                <Td className="text-muted-foreground">{a.product}</Td>
-                <Td className="tabular-nums">{a.qty}</Td>
-                <Td className="tabular-nums">{inr(a.askedPrice)}</Td>
-                <Td className="text-muted-foreground">{a.salesperson}</Td>
-                <Td>
-                  <Badge tone={st === "Approved" ? "good" : st === "Rejected" ? "bad" : "warn"}>{st}</Badge>
-                </Td>
-              </tr>
-            );
-          })}
-        </Table>
+        </ul>
+        {!items.length && (
+          <p className="mt-3 text-sm text-muted-foreground">No sales order requests waiting.</p>
+        )}
       </Panel>
 
-      {selected && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={() => setSelected(null)} />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="decision-title"
-            className="relative z-10 w-full max-h-[88dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 shadow-[var(--shadow-soft)] sm:max-w-md sm:rounded-2xl"
-          >
-            <p className="text-[0.65rem] uppercase tracking-[0.16em] text-muted-foreground">
-              {selected.id} · {selected.raised}
-            </p>
-            <h2 id="decision-title" className="mt-1 text-xl font-semibold tracking-tight">
-              {selected.customer}
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">{selected.salesperson}</p>
-
-            <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Product</dt>
-                <dd className="mt-0.5 font-medium">{selected.product}</dd>
-              </div>
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Qty</dt>
-                <dd className="mt-0.5 font-medium tabular-nums">{selected.qty}</dd>
-              </div>
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Asked</dt>
-                <dd className="mt-0.5 font-medium tabular-nums">{inr(selected.askedPrice)}</dd>
-              </div>
-              <div className="rounded-xl bg-secondary/60 px-3 py-2.5">
-                <dt className="text-xs text-muted-foreground">Floor</dt>
-                <dd className="mt-0.5 font-medium tabular-nums">{inr(selected.floorPrice)}</dd>
-              </div>
-            </dl>
-
-            {selected.askedPrice < selected.floorPrice && statusOf(selected) === "Pending" && (
-              <p className="mt-3 text-xs text-destructive">
-                {inr(selected.floorPrice - selected.askedPrice)} below floor
-              </p>
-            )}
-
-            <div className="mt-4">
-              <Badge tone={statusOf(selected) === "Approved" ? "good" : statusOf(selected) === "Rejected" ? "bad" : "warn"}>
-                {statusOf(selected)}
-              </Badge>
-            </div>
-
-            {canApprove && statusOf(selected) === "Pending" ? (
-              <div className="mt-5 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => decideSelected("Approved")}
-                  className="rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground"
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  onClick={() => decideSelected("Rejected")}
-                  className="rounded-xl border border-border px-4 py-3 text-sm text-destructive"
-                >
-                  Decline
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setSelected(null)}
-                className="mt-5 w-full rounded-xl border border-border py-3 text-sm"
-              >
-                Close
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
       <ApprovalPopup
-        open={popupOpen && items.length > 0}
+        open={popupOpen && queue.length > 0}
         onClose={() => {
           setPopupOpen(false);
+          setFocusKey(null);
           refresh();
         }}
-        items={items}
-        onDecided={(key, action) => {
+        items={queue}
+        onDecided={(key) => {
           dismiss(key);
-          const mockId = key.startsWith("m-") ? key.slice(2) : null;
-          if (mockId && action === "approve") setDecisions((d) => ({ ...d, [mockId]: "Approved" }));
-          if (mockId && action === "reject") setDecisions((d) => ({ ...d, [mockId]: "Rejected" }));
+          if (focusKey === key) setFocusKey(null);
         }}
       />
     </>

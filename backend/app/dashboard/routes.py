@@ -45,28 +45,31 @@ def accounts_dashboard(
     db: Session = Depends(get_db),
 ):
     """Financial dashboard for Accounts role (billing / receivables focus)."""
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     today = date.today()
     month_start = today.replace(day=1)
     week_end = today + timedelta(days=7)
 
+    pay_f = [Payment.organization_id == auth.organization_id]
+    inv_f = [Invoice.organization_id == auth.organization_id]
+    if company_id is not None:
+        pay_f.append(Payment.company_id == company_id)
+        inv_f.append(Invoice.company_id == company_id)
+
     today_collections = (
         db.query(func.coalesce(func.sum(Payment.amount), 0))
-        .filter(Payment.company_id == company_id, Payment.paid_at == today)
+        .filter(*pay_f, Payment.paid_at == today)
         .scalar()
     )
     month_collections = (
         db.query(func.coalesce(func.sum(Payment.amount), 0))
-        .filter(Payment.company_id == company_id, Payment.paid_at >= month_start)
+        .filter(*pay_f, Payment.paid_at >= month_start)
         .scalar()
     )
 
     open_invoices = (
         db.query(Invoice)
-        .filter(
-            Invoice.company_id == company_id,
-            Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
-        )
+        .filter(*inv_f, Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]))
         .all()
     )
 
@@ -97,27 +100,36 @@ def accounts_dashboard(
             elif due <= week_end:
                 due_this_week += bal
 
+    cust_f = [Customer.organization_id == auth.organization_id, Customer.is_active.is_(True)]
+    so_f = [SalesOrder.organization_id == auth.organization_id]
+    if company_id is not None:
+        cust_f.append(Customer.company_id == company_id)
+        so_f.append(SalesOrder.company_id == company_id)
+        inv_co = [Invoice.company_id == company_id]
+    else:
+        inv_co = [Invoice.organization_id == auth.organization_id]
+
     credit_exposure = (
         db.query(func.coalesce(func.sum(Customer.credit_limit), 0))
-        .filter(Customer.company_id == company_id, Customer.is_active.is_(True))
+        .filter(*cust_f)
         .scalar()
     )
     active_customers = (
         db.query(func.count(Customer.id))
-        .filter(Customer.company_id == company_id, Customer.is_active.is_(True))
+        .filter(*cust_f)
         .scalar()
     )
 
     invoice_count = (
         db.query(func.count(Invoice.id))
-        .filter(Invoice.company_id == company_id, Invoice.status != InvoiceStatus.CANCELLED)
+        .filter(*inv_f, Invoice.status != InvoiceStatus.CANCELLED)
         .scalar()
         or 0
     )
     today_invoices = (
         db.query(func.count(Invoice.id))
         .filter(
-            Invoice.company_id == company_id,
+            *inv_f,
             Invoice.invoice_date == today,
             Invoice.status != InvoiceStatus.CANCELLED,
         )
@@ -127,7 +139,7 @@ def accounts_dashboard(
     today_billing = (
         db.query(func.coalesce(func.sum(Invoice.total), 0))
         .filter(
-            Invoice.company_id == company_id,
+            *inv_f,
             Invoice.invoice_date == today,
             Invoice.status != InvoiceStatus.CANCELLED,
         )
@@ -136,23 +148,20 @@ def accounts_dashboard(
     invoiced_so = {
         r[0]
         for r in db.query(Invoice.sales_order_id)
-        .filter(Invoice.company_id == company_id, Invoice.sales_order_id.isnot(None))
+        .filter(*inv_co, Invoice.sales_order_id.isnot(None))
         .all()
         if r[0]
     }
     ready_to_invoice = (
         db.query(func.count(SalesOrder.id))
-        .filter(
-            SalesOrder.company_id == company_id,
-            SalesOrder.status == SalesOrderStatus.CONFIRMED,
-        )
+        .filter(*so_f, SalesOrder.status == SalesOrderStatus.CONFIRMED)
         .scalar()
         or 0
     )
     if invoiced_so:
         billed = (
             db.query(func.count(SalesOrder.id))
-            .filter(SalesOrder.id.in_(invoiced_so), SalesOrder.company_id == company_id)
+            .filter(SalesOrder.id.in_(invoiced_so), *so_f)
             .scalar()
             or 0
         )
@@ -179,7 +188,7 @@ def accounts_dashboard(
         else:
             aging_d90_plus += bal
         cost_delay += interest_loss(inv)
-    for c in db.query(Customer).filter(Customer.company_id == company_id, Customer.is_active.is_(True)):
+    for c in db.query(Customer).filter(*cust_f):
         due = by_cust.get(c.id, Decimal("0"))
         limit = c.credit_limit or Decimal("0")
         if limit > 0 and due > limit:
@@ -222,40 +231,43 @@ def supervisor_dashboard(
     from app.sales.ensure_schema import ensure_sales_schema
 
     ensure_sales_schema(engine)
-    company_id = auth.require_company()
+    company_id = auth.company_or_all()
     today = date.today()
     month_start = today.replace(day=1)
 
+    inv_f = [Invoice.organization_id == auth.organization_id]
+    lead_f = [Lead.organization_id == auth.organization_id]
+    quote_f = [Quotation.organization_id == auth.organization_id]
+    so_f = [SalesOrder.organization_id == auth.organization_id]
+    stock_f = [StockBalance.organization_id == auth.organization_id]
+    wh_f = [Warehouse.organization_id == auth.organization_id, Warehouse.is_active.is_(True)]
+    if company_id is not None:
+        inv_f.append(Invoice.company_id == company_id)
+        lead_f.append(Lead.company_id == company_id)
+        quote_f.append(Quotation.company_id == company_id)
+        so_f.append(SalesOrder.company_id == company_id)
+        stock_f.append(StockBalance.company_id == company_id)
+        wh_f.append(Warehouse.company_id == company_id)
+
     today_sales = (
         db.query(func.coalesce(func.sum(Invoice.total), 0))
-        .filter(
-            Invoice.company_id == company_id,
-            Invoice.invoice_date == today,
-            Invoice.status != InvoiceStatus.CANCELLED,
-        )
+        .filter(*inv_f, Invoice.invoice_date == today, Invoice.status != InvoiceStatus.CANCELLED)
         .scalar()
     )
     month_sales = (
         db.query(func.coalesce(func.sum(Invoice.total), 0))
-        .filter(
-            Invoice.company_id == company_id,
-            Invoice.invoice_date >= month_start,
-            Invoice.status != InvoiceStatus.CANCELLED,
-        )
+        .filter(*inv_f, Invoice.invoice_date >= month_start, Invoice.status != InvoiceStatus.CANCELLED)
         .scalar()
     )
     active_leads = (
         db.query(func.count(Lead.id))
-        .filter(
-            Lead.company_id == company_id,
-            Lead.status.notin_([LeadStatus.WON, LeadStatus.LOST]),
-        )
+        .filter(*lead_f, Lead.status.notin_([LeadStatus.WON, LeadStatus.LOST]))
         .scalar()
     )
     unassigned_leads = (
         db.query(func.count(Lead.id))
         .filter(
-            Lead.company_id == company_id,
+            *lead_f,
             Lead.assigned_to_id.is_(None),
             Lead.status.notin_([LeadStatus.WON, LeadStatus.LOST]),
         )
@@ -263,17 +275,14 @@ def supervisor_dashboard(
     )
     pending_quotes = (
         db.query(func.count(Quotation.id))
-        .filter(
-            Quotation.company_id == company_id,
-            Quotation.status == QuotationStatus.PENDING_APPROVAL,
-        )
+        .filter(*quote_f, Quotation.status == QuotationStatus.PENDING_APPROVAL)
         .scalar()
         or 0
     )
     pending_order_approvals = (
         db.query(func.count(SalesOrder.id))
         .filter(
-            SalesOrder.company_id == company_id,
+            *so_f,
             SalesOrder.status == SalesOrderStatus.DRAFT,
             SalesOrder.ops_status == "pending_approval",
         )
@@ -284,7 +293,7 @@ def supervisor_dashboard(
     pending_orders = (
         db.query(func.count(SalesOrder.id))
         .filter(
-            SalesOrder.company_id == company_id,
+            *so_f,
             SalesOrder.status == SalesOrderStatus.INVOICED,
             SalesOrder.ops_status.in_(["shortage", "procuring", "ready"]),
         )
@@ -292,63 +301,59 @@ def supervisor_dashboard(
     )
     confirmed_orders = (
         db.query(func.count(SalesOrder.id))
-        .filter(SalesOrder.company_id == company_id, SalesOrder.status == SalesOrderStatus.INVOICED)
+        .filter(*so_f, SalesOrder.status == SalesOrderStatus.INVOICED)
         .scalar()
         or 0
     )
     low_stock_items = (
         db.query(func.count(StockBalance.id))
-        .filter(StockBalance.company_id == company_id, StockBalance.quantity < 100)
+        .filter(*stock_f, StockBalance.quantity < 100)
         .scalar()
     )
     outstanding = (
         db.query(func.coalesce(func.sum(Invoice.total - Invoice.amount_paid), 0))
-        .filter(
-            Invoice.company_id == company_id,
-            Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
-        )
+        .filter(*inv_f, Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]))
         .scalar()
     )
     overdue_invoices = 0
-    for inv in (
-        db.query(Invoice)
-        .filter(
-            Invoice.company_id == company_id,
-            Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL]),
-        )
-        .all()
-    ):
+    for inv in db.query(Invoice).filter(*inv_f, Invoice.status.in_([InvoiceStatus.OPEN, InvoiceStatus.PARTIAL])).all():
         if inv.due_date and inv.due_date < today and (inv.total - inv.amount_paid) > 0:
             overdue_invoices += 1
 
-    team_users = (
-        db.query(func.count(UserCompany.user_id.distinct()))
-        .filter(UserCompany.company_id == company_id)
-        .scalar()
-    )
-
-    total_stock = Decimal(
-        str(
-            db.query(func.coalesce(func.sum(StockBalance.quantity), 0))
-            .filter(StockBalance.company_id == company_id)
+    if company_id is not None:
+        team_users = (
+            db.query(func.count(UserCompany.user_id.distinct()))
+            .filter(UserCompany.company_id == company_id)
             .scalar()
         )
+    else:
+        from app.core.models import Company
+
+        org_cos = [
+            r[0]
+            for r in db.query(Company.id).filter(Company.organization_id == auth.organization_id).all()
+        ]
+        team_users = (
+            db.query(func.count(UserCompany.user_id.distinct()))
+            .filter(UserCompany.company_id.in_(org_cos))
+            .scalar()
+            if org_cos
+            else 0
+        )
+
+    total_stock = Decimal(
+        str(db.query(func.coalesce(func.sum(StockBalance.quantity), 0)).filter(*stock_f).scalar())
     )
     inv_value = Decimal(
         str(
             db.query(func.coalesce(func.sum(StockBalance.quantity * Product.base_price), 0))
             .join(Product, Product.id == StockBalance.product_id)
-            .filter(StockBalance.company_id == company_id)
+            .filter(*stock_f)
             .scalar()
         )
     )
     # ponytail: confirm already deducts stock — available = on-hand balance
-    warehouses = (
-        db.query(func.count(Warehouse.id))
-        .filter(Warehouse.company_id == company_id, Warehouse.is_active.is_(True))
-        .scalar()
-        or 0
-    )
+    warehouses = db.query(func.count(Warehouse.id)).filter(*wh_f).scalar() or 0
 
     return SupervisorDashboardOut(
         today_sales=Decimal(str(today_sales)),

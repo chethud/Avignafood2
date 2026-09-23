@@ -441,6 +441,12 @@ function KpiSettingsPopup({
 }
 
 /** Optional chrome when customizing: remove + size on the widget itself. */
+const TOUR_BY_WIDGET: Partial<Record<DashWidgetId, string>> = {
+  kpis: "owner-kpis",
+  approvals: "owner-approvals",
+  dispatch: "owner-movement",
+};
+
 export function WidgetChrome({
   id,
   size,
@@ -457,7 +463,7 @@ export function WidgetChrome({
   children: ReactNode;
 }) {
   return (
-    <div className={cn("relative min-w-0", SIZE_CLASS[size])}>
+    <div className={cn("relative min-w-0", SIZE_CLASS[size])} data-tour={TOUR_BY_WIDGET[id]}>
       {editing && (
         <div className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-lg border border-border bg-card/95 p-0.5 shadow-sm backdrop-blur">
           {([1, 2, 3] as DashSize[]).map((s) => (

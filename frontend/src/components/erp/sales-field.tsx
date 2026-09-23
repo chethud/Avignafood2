@@ -17,7 +17,9 @@ export type GeoPhoto = { url: string; lat: number | null; lng: number | null };
 export function useCompanies() {
   const [companies, setCompanies] = useState<CompanyOpt[]>([]);
   useEffect(() => {
-    api<CompanyOpt[]>("/api/v1/companies").then(setCompanies).catch(() => setCompanies([]));
+    api<CompanyOpt[]>("/api/v1/companies")
+      .then((rows) => setCompanies(Array.isArray(rows) ? rows : []))
+      .catch(() => setCompanies([]));
   }, []);
   return companies;
 }

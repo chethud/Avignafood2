@@ -89,10 +89,6 @@ def list_warehouses(
         .filter(Warehouse.company_id == company_id, Warehouse.organization_id == auth.organization_id)
         .all()
     )
-    if not rows:
-        wh = _default_warehouse(db, company_id, auth.organization_id)
-        db.commit()
-        return [wh]
     return rows
 
 

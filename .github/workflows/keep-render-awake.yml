@@ -1,0 +1,32 @@
+# Keep Render free-tier API awake (avoids cold starts / sleep).
+name: Keep Render API awake
+
+on:
+  schedule:
+    # Every 5 minutes
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      RENDER_HEALTH_URL: ${{ vars.RENDER_HEALTH_URL }}
+    steps:
+      - name: Ping avighna-api /health
+        run: |
+          set -e
+          URL="${RENDER_HEALTH_URL:-https://avighna-api.onrender.com/health}"
+          echo "Pinging $URL"
+          for i in 1 2 3; do
+            if curl -fsS --max-time 55 "$URL"; then
+              echo ""
+              echo "OK (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i failed — retrying…"
+            sleep 5
+          done
+          echo "All attempts failed"
+          exit 1

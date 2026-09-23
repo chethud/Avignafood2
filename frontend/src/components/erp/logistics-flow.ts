@@ -5,7 +5,10 @@ export const FAIL_REASONS = [
   "Vehicle issue",
   "Goods damaged",
   "Other",
-];
+] as const;
+
+/** Failures that need a photo of damage / vehicle problem. */
+export const FAIL_REASONS_NEED_PHOTO = ["Vehicle issue", "Goods damaged"] as const;
 
 export const SLOTS = [
   { key: "morning", label: "Morning" },
@@ -53,6 +56,7 @@ export type LogisticsStop = {
 
 export type LogisticsRun = {
   id: number;
+  company_id?: number | null;
   number: string;
   on_date: string;
   slot?: string;
@@ -98,6 +102,38 @@ export function slotLabel(slot?: string) {
   return s === "morning" ? "Morning" : s === "evening" ? "Evening" : "Afternoon";
 }
 
+/** Driver-facing run date: Today / Tomorrow / Wed, 9 Sep 2026 (local calendar day). */
+export function runDateLabel(iso?: string | null) {
+  if (!iso) return "Date not set";
+  const raw = String(iso).slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!m) return raw;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const target = new Date(y, mo - 1, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const t0 = new Date(today);
+  const t1 = new Date(today);
+  t1.setDate(t1.getDate() + 1);
+  const pretty = target.toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  if (target.getTime() === t0.getTime()) return `Today · ${pretty}`;
+  if (target.getTime() === t1.getTime()) return `Tomorrow · ${pretty}`;
+  return pretty;
+}
+
+export function runTripHeading(run: { on_date?: string | null; slot?: string; number?: string }) {
+  const parts = [slotLabel(run.slot), runDateLabel(run.on_date)];
+  if (run.number) parts.push(run.number);
+  return parts.join(" · ");
+}
+
 export const TRUCK_STATES = [
   { key: "idle" as const, title: "Idle", hint: "At base" },
   { key: "going" as const, title: "Going", hint: "Out with goods" },
@@ -107,10 +143,11 @@ export const TRUCK_STATES = [
 export type TruckStateKey = (typeof TRUCK_STATES)[number]["key"];
 
 export const WORK_STEPS = [
-  { key: "book", n: "1", title: "Assigned" },
-  { key: "leave", n: "2", title: "Going" },
-  { key: "deliver", n: "3", title: "Drop" },
-  { key: "return", n: "4", title: "Base" },
+  { key: "pick", n: "1", title: "Select" },
+  { key: "load", n: "2", title: "Load" },
+  { key: "leave", n: "3", title: "Go" },
+  { key: "deliver", n: "4", title: "Drop" },
+  { key: "return", n: "5", title: "Base" },
 ] as const;
 
 export type WorkPhase = (typeof WORK_STEPS)[number]["key"];
@@ -130,32 +167,43 @@ export function truckKey(status?: string | null): TruckStateKey {
 const GOING = ["dispatched", "in_transit", "out_for_delivery", "partial"];
 const BOOKED = ["planned", "loading", "loaded"];
 
-export function workPhase(run: LogisticsRun | null, status: string): WorkPhase {
+export function workPhase(
+  run: LogisticsRun | null,
+  status: string,
+  _pickedRunId?: number | null,
+): WorkPhase {
   const key = truckKey(status);
   if (key === "going" && run) return "deliver";
   if (key === "coming_back") return "return";
-  if (run && BOOKED.includes(run.status)) return "leave";
-  return "book";
+  // planned = still choosing / confirming; loading = shipment picked, confirm load next
+  if (run && run.status === "loaded") return "leave";
+  if (run && run.status === "loading") return "load";
+  if (run && GOING.includes(run.status)) return "deliver";
+  if (run && run.status === "returning") return "return";
+  return "pick";
 }
 
 export function activeRun(runs: LogisticsRun[], status: string, runId?: number | null): LogisticsRun | null {
   if (runId) {
     const hit = runs.find((r) => r.id === runId);
-    if (hit && !["completed", "cancelled"].includes(hit.status)) return hit;
+    if (hit && !["completed", "cancelled", "delivered"].includes(hit.status)) return hit;
   }
-  const going = runs.find((r) => GOING.includes(r.status));
-  const back = runs.find((r) => r.status === "returning");
-  const booked = runs.find((r) => BOOKED.includes(r.status));
+  const open = runs.filter((r) => !["completed", "cancelled", "delivered"].includes(r.status));
+  const going = open.find((r) => GOING.includes(r.status));
+  const back = open.find((r) => r.status === "returning");
+  const loaded = open.find((r) => r.status === "loaded");
+  const booked = open.find((r) => BOOKED.includes(r.status)) || open[0] || null;
   const key = truckKey(status);
-  if (key === "going") return going || booked || null;
+  if (key === "going") return going || loaded || booked || null;
   if (key === "coming_back") return back || going || null;
-  return booked || null;
+  return loaded || booked || null;
 }
 
 export function statusLabel(s: string) {
   return (
     {
-      planned: "Assigned",
+      planned: "Waiting",
+      loading: "Selected",
       loaded: "Loaded",
       dispatched: "Going",
       in_transit: "Going",
@@ -174,7 +222,7 @@ export function stopCta(status: string, phase: WorkPhase) {
   if (status === "delivered") return "View delivery";
   if (status === "partial") return "View partial";
   if (status === "failed") return "View failed";
-  if (phase !== "deliver") return "Leaves after Load & go";
+  if (phase !== "deliver") return "After Go";
   if (status === "out_for_delivery") return "Mark delivery";
   return "Start delivery";
 }

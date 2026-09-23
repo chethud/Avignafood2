@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
 import { useMe } from "@/lib/me-context";
@@ -159,6 +159,9 @@ function Customers() {
   const [contactPhone, setContactPhone] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState("");
+  const [typeF, setTypeF] = useState("all");
+  const [healthF, setHealthF] = useState("all");
 
   async function load() {
     try {
@@ -262,6 +265,30 @@ function Customers() {
 
   const outstanding = rows.reduce((a, c) => a + c.outstanding, 0);
 
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((c) => {
+      if (typeF !== "all" && (c.customer_type || "") !== typeF) return false;
+      if (healthF === "inactive") {
+        if (c.is_active) return false;
+      } else if (healthF !== "all") {
+        if (!c.is_active || c.health !== healthF) return false;
+      }
+      if (!needle) return true;
+      return `${c.name} ${c.legal_name} ${c.trade_name} ${c.gstin} ${c.phone} ${c.customer_type}`
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [rows, q, typeF, healthF]);
+
+  const filtersActive = Boolean(q.trim()) || typeF !== "all" || healthF !== "all";
+
+  function clearFilters() {
+    setQ("");
+    setTypeF("all");
+    setHealthF("all");
+  }
+
   return (
     <>
       <PageHeader
@@ -287,8 +314,22 @@ function Customers() {
       )}
 
       {isSales ? (
-        <ul className="mt-4 space-y-2">
-          {rows.map((c) => (
+        <>
+          <div className="mt-4 mb-2 grid gap-2 sm:grid-cols-2">
+            <input
+              className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              placeholder="Search customer, phone, GSTIN"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={typeF} onChange={(e) => setTypeF(e.target.value)}>
+              <option value="all">All types</option>
+              <option value="wholesale">Wholesale</option>
+              <option value="retail">Retail</option>
+            </select>
+          </div>
+          <ul className="space-y-2">
+          {visible.map((c) => (
             <li key={c.id} className="rounded-2xl border border-border bg-card px-3 py-3">
               <button type="button" className="w-full text-left" onClick={() => openEdit(c)}>
                 <p className="font-medium">{c.trade_name || c.legal_name || c.name}</p>
@@ -308,12 +349,42 @@ function Customers() {
               )}
             </li>
           ))}
-          {!rows.length && <li className="py-8 text-center text-sm text-muted-foreground">No customers yet.</li>}
+          {!visible.length && <li className="py-8 text-center text-sm text-muted-foreground">{rows.length ? "No customers match." : "No customers yet."}</li>}
         </ul>
+        </>
       ) : (
-        <Panel>
+        <Panel
+          title="Customers"
+          className="mt-4"
+          hint={filtersActive ? `Showing ${visible.length} of ${rows.length}` : undefined}
+        >
+          <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <input
+              className="rounded-lg border border-border bg-background px-3 py-2 text-sm sm:col-span-2"
+              placeholder="Search customer, phone, GSTIN"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={typeF} onChange={(e) => setTypeF(e.target.value)}>
+              <option value="all">All types</option>
+              <option value="wholesale">Wholesale</option>
+              <option value="retail">Retail</option>
+            </select>
+            <select className="rounded-lg border border-border bg-background px-3 py-2 text-sm" value={healthF} onChange={(e) => setHealthF(e.target.value)}>
+              <option value="all">All health</option>
+              <option value="GOOD">Good</option>
+              <option value="WATCH">Watch</option>
+              <option value="RISK">Risk</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+          {filtersActive && (
+            <button type="button" className="mb-3 text-sm text-primary hover:underline" onClick={clearFilters}>
+              Clear filters
+            </button>
+          )}
           <Table head={["Customer", "Type", "Credit", "Outstanding", "Health"]}>
-            {rows.map((c) => {
+            {visible.map((c) => {
               const used = c.credit_limit > 0 ? (c.outstanding / c.credit_limit) * 100 : 0;
               return (
                 <tr key={c.id} className="cursor-pointer hover:bg-secondary/40" onClick={() => openEdit(c)}>
@@ -334,7 +405,7 @@ function Customers() {
               );
             })}
           </Table>
-          {!rows.length && <p className="py-8 text-center text-sm text-muted-foreground">No customers yet.</p>}
+          {!visible.length && <p className="py-8 text-center text-sm text-muted-foreground">{rows.length ? "No customers match." : "No customers yet."}</p>}
         </Panel>
       )}
 

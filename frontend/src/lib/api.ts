@@ -1,4 +1,6 @@
-export const API_URL = import.meta.env.VITE_API_URL ?? "";
+export const API_URL =
+  (import.meta.env.VITE_API_URL as string | undefined)?.trim() ||
+  (import.meta.env.PROD ? "https://avighna-api.onrender.com" : "");
 
 export type Me = {
   user: {
@@ -24,9 +26,20 @@ export function getCompanyId(): string | null {
   return localStorage.getItem("companyId");
 }
 
-const AUTH_EVENT = "avighna-auth";
+/** When firm scope is All companies, list APIs omit X-Company-Id (org-wide). */
+export function getFirmScopeRaw(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("firmScope");
+}
 
-function notifyAuthChanged() {
+export function isAllCompaniesScope(): boolean {
+  return getFirmScopeRaw() === "all";
+}
+
+const AUTH_EVENT = "avighna-auth";
+const FIRM_EVENT = "avighna-firm";
+
+export function notifyAuthChanged() {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(AUTH_EVENT));
 }
@@ -35,6 +48,18 @@ export function onAuthChange(handler: () => void) {
   if (typeof window === "undefined") return () => {};
   window.addEventListener(AUTH_EVENT, handler);
   return () => window.removeEventListener(AUTH_EVENT, handler);
+}
+
+/** Firm/company scope changed — does not re-validate the session. */
+export function notifyFirmChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(FIRM_EVENT));
+}
+
+export function onFirmChange(handler: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(FIRM_EVENT, handler);
+  return () => window.removeEventListener(FIRM_EVENT, handler);
 }
 
 export function setAuth(token: string, companyId?: number) {
@@ -46,6 +71,7 @@ export function setAuth(token: string, companyId?: number) {
 export function clearAuth() {
   localStorage.removeItem("token");
   localStorage.removeItem("companyId");
+  localStorage.removeItem("firmScope");
   notifyAuthChanged();
 }
 
@@ -57,14 +83,22 @@ export function mediaUrl(path: string | null | undefined): string {
   return path;
 }
 
-type ApiOptions = RequestInit & { companyId?: number | string };
+type ApiOptions = RequestInit & { companyId?: number | string | null };
 
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const { companyId: companyOverride, ...init } = options;
   const headers = new Headers(init.headers || {});
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const companyId = companyOverride != null ? String(companyOverride) : getCompanyId();
+  // Explicit null/"" → omit company header (session endpoints like /auth/me)
+  const companyId =
+    companyOverride === null || companyOverride === ""
+      ? null
+      : companyOverride != null
+        ? String(companyOverride)
+        : isAllCompaniesScope()
+          ? null
+          : getCompanyId();
   if (companyId) headers.set("X-Company-Id", companyId);
   if (init.body && !(init.body instanceof URLSearchParams) && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -92,7 +126,8 @@ export async function apiUpload(
   const headers = new Headers();
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const cid = companyId != null ? String(companyId) : getCompanyId();
+  const cid =
+    companyId != null ? String(companyId) : isAllCompaniesScope() ? null : getCompanyId();
   if (cid) headers.set("X-Company-Id", cid);
   const body = new FormData();
   body.append("file", file);

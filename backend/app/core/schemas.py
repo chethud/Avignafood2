@@ -31,6 +31,12 @@ class MeProfileUpdate(BaseModel):
     phone: str | None = None
 
 
+class MePasswordChange(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=6)
+    confirm_password: str = Field(min_length=6)
+
+
 class MeOut(BaseModel):
     user: UserOut
     permissions: list[str]
@@ -527,6 +533,7 @@ class SalesOrderCreate(BaseModel):
 class SalesOrderOut(ORMModel):
     id: int
     company_id: int
+    company_name: str | None = None
     customer_id: int
     quotation_id: int | None
     warehouse_id: int
@@ -536,6 +543,8 @@ class SalesOrderOut(ORMModel):
     stock_warnings: list[str] = []
     ops_status: str = "pending_approval"
     customer_name: str | None = None
+    created_by_id: int | None = None
+    created_by_name: str | None = None
     created_at: datetime | None = None
     confirmed_at: datetime | None = None
     logistics_status: str | None = None
@@ -561,6 +570,8 @@ class OrderDeskLine(BaseModel):
 
 class OutstandingDeliveryOut(BaseModel):
     order_id: int
+    company_id: int
+    company_name: str | None = None
     customer_name: str
     product_id: int
     product_name: str
@@ -574,6 +585,8 @@ class OutstandingDeliveryOut(BaseModel):
 
 class OrderDeskOut(BaseModel):
     id: int
+    company_id: int
+    company_name: str | None = None
     customer_id: int
     customer_name: str
     quotation_id: int | None = None
@@ -610,7 +623,18 @@ class RaisePurchaseIn(BaseModel):
 class AllocateDispatchIn(BaseModel):
     on_date: date
     slot: str  # morning | afternoon | evening
+    vehicle_id: int
+    driver_user_id: int  # logistics role user — chosen after vehicle
+
+
+class PlanDeliveryIn(BaseModel):
+    """Sales plans vehicle/driver at order time (before or after invoice)."""
+
+    delivery_mode: str  # own_vehicle | manufacturer
+    on_date: date | None = None
+    slot: str | None = None
     vehicle_id: int | None = None
+    driver_user_id: int | None = None
 
 
 class PlanDeliveryIn(BaseModel):
@@ -631,9 +655,19 @@ class ConfirmVehicleIn(BaseModel):
 
 
 class ReassignVehicleIn(BaseModel):
-    """Change truck before logistics starts the run (planned / loading / loaded only)."""
+    """Change truck / driver before logistics starts the run (planned / loading / loaded only)."""
 
     vehicle_id: int
+    driver_user_id: int | None = None
+
+
+class DriverOut(BaseModel):
+    """Logistics person available to assign after picking a vehicle."""
+
+    id: int
+    full_name: str
+    phone: str | None = None
+    email: str
 
 
 class InvoiceLineAdjustIn(BaseModel):
@@ -694,6 +728,8 @@ class InvoiceOut(ORMModel):
 
 class BillableLoadOut(BaseModel):
     dispatch_id: int
+    company_id: int
+    company_name: str | None = None
     customer_id: int
     customer_name: str
     product: str
@@ -716,12 +752,16 @@ class BillableLoadOut(BaseModel):
 
 class BillableOrderOut(BaseModel):
     sales_order_id: int
+    company_id: int
+    company_name: str | None = None
     customer_id: int
     customer_name: str
     address: str | None = None
     ops_status: str
     logistics_status: str | None = None
     vehicle: str | None = None
+    driver_name: str | None = None
+    delivery_mode: str = "own_vehicle"
     line_count: int
     qty: Decimal
     estimated_total: Decimal
@@ -729,10 +769,16 @@ class BillableOrderOut(BaseModel):
     current_outstanding: Decimal = Decimal("0")
     projected_exposure: Decimal = Decimal("0")
     credit_ok: bool = True
+    can_invoice: bool = True
+    invoice_block_reason: str | None = None
 
 
 class ClientAccountOut(BaseModel):
     customer_id: int
+    customer_ids: list[int] = []
+    company_id: int
+    company_ids: list[int] = []
+    company_name: str | None = None
     name: str
     gstin: str | None = None
     phone: str | None = None
@@ -748,6 +794,10 @@ class ClientAccountOut(BaseModel):
 
 class ClientLedgerOut(BaseModel):
     customer_id: int
+    customer_ids: list[int] = []
+    company_id: int
+    company_ids: list[int] = []
+    company_name: str | None = None
     name: str
     gstin: str | None = None
     phone: str | None = None
@@ -761,6 +811,7 @@ class ClientLedgerOut(BaseModel):
     paid: Decimal = Decimal("0")
     overdue: Decimal = Decimal("0")
     invoices: list[InvoiceOut] = []
+    orders: list[dict] = []
 
 
 class PaymentCreate(BaseModel):
@@ -900,6 +951,7 @@ class LogisticsStopOut(BaseModel):
 
 class LogisticsRunOut(BaseModel):
     id: int
+    company_id: int | None = None
     number: str
     on_date: date
     slot: str = "afternoon"
@@ -1026,6 +1078,9 @@ class VehicleAvailOut(BaseModel):
     morning: str
     afternoon: str
     evening: str
+    morning_for: str | None = None
+    afternoon_for: str | None = None
+    evening_for: str | None = None
 
 
 class VehicleLiveSet(BaseModel):

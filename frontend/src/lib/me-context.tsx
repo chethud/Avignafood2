@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, getToken, onAuthChange, type Me } from "@/lib/api";
+import { ensureFirmScopeForRole } from "@/lib/company-context";
 
 type MeCtx = { me: Me | null; loading: boolean; refresh: () => Promise<Me | null> };
 
@@ -17,13 +18,23 @@ export function MeProvider({ children }: { children: ReactNode }) {
     }
     setLoading(true);
     try {
-      const data = await api<Me>("/api/v1/auth/me");
+      // Always call /me without company scope so switching firms cannot 403 the session
+      const data = await api<Me>("/api/v1/auth/me", { companyId: null });
+      ensureFirmScopeForRole(data.user.role);
       setMe(data);
       return data;
-    } catch {
-      localStorage.removeItem("token");
-      localStorage.removeItem("companyId");
-      setMe(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Only wipe the session on real auth failures — never on company-scope errors
+      const authFail =
+        /401|unauthor|credential|not authenticated|invalid token|could not validate/i.test(msg) ||
+        msg === "Unauthorized";
+      if (authFail || !getToken()) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("companyId");
+        localStorage.removeItem("firmScope");
+        setMe(null);
+      }
       return null;
     } finally {
       setLoading(false);
