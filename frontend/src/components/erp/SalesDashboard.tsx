@@ -46,16 +46,7 @@ export function SalesDashboard() {
       api<Product[]>("/api/v1/products").catch(() => [] as Product[]),
     ]).then(([rows, products]) => {
       if (!rows.length) {
-        setStock(
-          [
-            { name: "Nutragain Flour", qty: 1250, unit: "KG", selling: 50 },
-            { name: "Besan", qty: 850, unit: "KG", selling: 70 },
-            { name: "Suji", qty: 620, unit: "KG", selling: 80 },
-            { name: "Rava", qty: 480, unit: "KG", selling: 60 },
-            { name: "Maida", qty: 210, unit: "KG", selling: 45 },
-            { name: "Poha", qty: 180, unit: "KG", selling: 55 },
-          ].sort((a, b) => b.qty - a.qty),
-        );
+        setStock([]);
         return;
       }
       const names = Object.fromEntries(products.map((p) => [p.id, p]));

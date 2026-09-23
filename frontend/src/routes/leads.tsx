@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { API_URL, api, getCompanyId, getToken } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
 import { useMe } from "@/lib/me-context";
-import { inr } from "@/lib/erp-data";
+import { firms, inr } from "@/lib/erp-data";
+import { useCompanies, type CompanyOpt } from "@/components/erp/sales-field";
 import { Badge, Kpi, PageHeader } from "@/components/erp/ui-bits";
 import { cn } from "@/lib/utils";
 
@@ -77,6 +78,7 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 const emptyForm = {
+  company_id: "",
   business_name: "",
   contact_person: "",
   phone: "",
@@ -131,6 +133,18 @@ function LeadsDesk() {
   const { me } = useMe();
   const isSales = me?.user.role === "sales";
   const { firm } = useCompany();
+  const companies = useCompanies();
+  const allowedIds = me?.user.company_ids ?? [];
+  const companyOptions: CompanyOpt[] = (
+    companies.length
+      ? companies
+      : firms.map((f) => ({
+          id: f.companyId,
+          legal_name: f.name,
+          trade_name: f.short,
+          logo_url: f.logo ?? null,
+        }))
+  ).filter((c) => !allowedIds.length || allowedIds.includes(c.id));
   const importRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<LeadRow[]>([]);
   const [q, setQ] = useState("");
@@ -208,13 +222,28 @@ function LeadsDesk() {
   const nAt = (k: string) => stageCounts.find((s) => s.key === k)?.n ?? 0;
   const pipelineValue = rows.filter((r) => r.stage !== "won" && r.stage !== "lost").reduce((s, r) => s + r.value, 0);
 
+  function presetCompanyId() {
+    if (firm !== "all") {
+      const id = firms.find((f) => f.id === firm)?.companyId;
+      if (id != null) return String(id);
+    }
+    return companyOptions.length === 1 ? String(companyOptions[0].id) : "";
+  }
+
   async function createLead(e: FormEvent) {
     e.preventDefault();
     setError("");
+    const companyId = Number(form.company_id);
+    if (!companyId) {
+      setError("Select a company");
+      return;
+    }
     try {
       await api("/api/v1/leads", {
         method: "POST",
+        companyId,
         body: JSON.stringify({
+          company_id: companyId,
           business_name: form.business_name,
           contact_person: form.contact_person || null,
           phone: form.phone || null,
@@ -351,7 +380,11 @@ function LeadsDesk() {
             />
             <button
               type="button"
-              onClick={() => setAdding(true)}
+              onClick={() => {
+                setForm({ ...emptyForm, company_id: presetCompanyId() });
+                setError("");
+                setAdding(true);
+              }}
               className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
             >
               + Add lead
@@ -536,6 +569,22 @@ function LeadsDesk() {
           >
             <h2 className="text-lg font-semibold">Add lead</h2>
             <div className="mt-4 space-y-3">
+              <label className="block text-sm text-muted-foreground">
+                Company
+                <select
+                  required
+                  className={cn(inputCls, "mt-1 w-full text-foreground")}
+                  value={form.company_id}
+                  onChange={(e) => setForm((f) => ({ ...f, company_id: e.target.value }))}
+                >
+                  <option value="">Select company</option>
+                  {companyOptions.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.trade_name || c.legal_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               {(
                 [
                   ["business_name", "Name", "text", true],

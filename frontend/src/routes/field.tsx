@@ -39,15 +39,6 @@ type CatalogItem = {
 
 type CartLine = { qty: number; give: number | null };
 
-const DUMMY_STOCK: Omit<CatalogItem, "key" | "product_id" | "floor">[] = [
-  { name: "Nutragain Flour", unit: "KG", sku: "NF-500", available: 1250, selling: 50 },
-  { name: "Besan", unit: "KG", sku: "BS-50", available: 850, selling: 70 },
-  { name: "Suji", unit: "KG", sku: "SJ-50", available: 620, selling: 80 },
-  { name: "Rava", unit: "KG", sku: "RV-50", available: 480, selling: 60 },
-  { name: "Maida", unit: "KG", sku: "MD-50", available: 210, selling: 45 },
-  { name: "Poha", unit: "KG", sku: "PH-50", available: 180, selling: 55 },
-];
-
 function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
@@ -192,18 +183,7 @@ function Field() {
           })),
         );
       } else {
-        setCatalog(
-          DUMMY_STOCK.map((r) => ({
-            key: `s:${r.sku}`,
-            product_id: null,
-            sku: r.sku,
-            name: r.name,
-            unit: r.unit,
-            selling: r.selling,
-            floor: 0,
-            available: r.name === "Maida" || r.name === "Poha" ? r.available : r.available + ((companyId - 1) % 4) * 35,
-          })),
-        );
+        setCatalog([]);
       }
     }).finally(() => {
       if (!cancelled) setCatalogBusy(false);

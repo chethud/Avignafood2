@@ -79,14 +79,12 @@ function LoginPage() {
           ))}
         </div>
         <div className="mb-1 text-center font-[Fraunces,Georgia,serif] text-3xl tracking-tight">Avighna Group</div>
-        <p className="mb-6 text-center text-sm text-muted-foreground">
-          Sign in — Accounts, Owner & Supervisor open on all companies
-        </p>
+        <p className="mb-6 text-center text-sm text-foreground">Sign in to continue</p>
         {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
-        <label className="mb-3 block text-sm text-muted-foreground">
+        <label className="mb-3 block text-sm font-medium text-foreground">
           Email
           <input
-            className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm font-normal text-foreground outline-none focus:border-primary"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             type="email"
@@ -95,11 +93,11 @@ function LoginPage() {
             required
           />
         </label>
-        <label className="mb-4 block text-sm text-muted-foreground">
+        <label className="mb-4 block text-sm font-medium text-foreground">
           Password
           <span className="relative mt-1 block">
             <input
-              className="w-full rounded-xl border border-border bg-background px-3 py-2 pr-10 font-sans text-sm outline-none focus:border-primary"
+              className="w-full rounded-xl border border-border bg-background px-3 py-2 pr-10 text-sm font-normal text-foreground outline-none focus:border-primary"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               type={showPassword ? "text" : "password"}
@@ -112,7 +110,7 @@ function LoginPage() {
             />
             <button
               type="button"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-foreground hover:bg-secondary"
               aria-label={showPassword ? "Hide password" : "Show password"}
               onClick={() => setShowPassword((v) => !v)}
             >

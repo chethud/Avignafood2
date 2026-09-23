@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
-import { byFirm, inr, mt, purchaseOrders as mockPOs } from "@/lib/erp-data";
+import { inr, mt } from "@/lib/erp-data";
 import { Badge, Bar, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
 import { cn } from "@/lib/utils";
 
@@ -119,22 +119,9 @@ function Purchases() {
         return;
       }
     } catch {
-      /* mock */
+      /* leave the list empty when the API is unavailable */
     }
-    setRows(
-      byFirm(mockPOs, firm).map((p) => ({
-        id: p.id,
-        customer: "—",
-        source: "manufacturer",
-        manufacturer: p.manufacturer,
-        product: p.product,
-        qty: p.qty,
-        received: p.received,
-        value: p.value,
-        eta: p.eta,
-        status: p.status,
-      })),
-    );
+    setRows([]);
   }
 
   useEffect(() => {

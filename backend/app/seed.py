@@ -196,24 +196,44 @@ COMPANY_BRANDING = [
         "trade_name": "Asian Apex",
         "invoice_prefix": "AA",
         "logo_url": "/logos/asian-apex.jpg",
+        "gstin": "29AAAAA0001A1Z1",
+        "pan": "AAAAA0001A",
+        "address": "No. 14, Industrial Area, Peenya, Bengaluru 560058",
+        "phone": "+91 80 4123 1001",
+        "email": "accounts@asianapex.local",
     },
     {
         "legal_name": "Avighna Speciality Ingredients Pvt Ltd",
         "trade_name": "Avighna",
         "invoice_prefix": "AV",
         "logo_url": "/logos/avighna.png",
+        "gstin": "29AAAAA0002A1Z2",
+        "pan": "AAAAA0002A",
+        "address": "2nd Floor, Spice Park, Yeshwanthpur, Bengaluru 560022",
+        "phone": "+91 80 4123 1002",
+        "email": "hello@avighna.local",
     },
     {
         "legal_name": "Ganesh Inc.",
         "trade_name": "Ganesh Inc",
         "invoice_prefix": "GI",
         "logo_url": "/logos/ganesh-inc.jpg",
+        "gstin": "29AAAAA0003A1Z3",
+        "pan": "AAAAA0003A",
+        "address": "Plot 8, Bommasandra Industrial Area, Bengaluru 560099",
+        "phone": "+91 80 4123 1003",
+        "email": "sales@ganeshinc.local",
     },
     {
         "legal_name": "Atharva Associates",
         "trade_name": "Atharva Associates",
         "invoice_prefix": "AT",
         "logo_url": "/logos/atharva-associates.png",
+        "gstin": "29AAAAA0004A1Z4",
+        "pan": "AAAAA0004A",
+        "address": "21, Magadi Road, Bengaluru 560023",
+        "phone": "+91 80 4123 1004",
+        "email": "office@atharva.local",
     },
 ]
 
@@ -262,6 +282,11 @@ def _sync_company_branding(db) -> None:
         company.trade_name = brand["trade_name"]
         company.invoice_prefix = brand["invoice_prefix"]
         company.logo_url = brand["logo_url"]
+        company.gstin = brand["gstin"]
+        company.pan = brand["pan"]
+        company.address = brand["address"]
+        company.phone = brand["phone"]
+        company.email = brand["email"]
     db.commit()
     print(f"Company branding synced for {min(len(companies), len(COMPANY_BRANDING))} companies")
 
@@ -707,16 +732,45 @@ def _clear_demo_transactions(db) -> None:
         "leads",
         "stock_movements",
     ]
-    have = set(inspect(db.get_bind()).get_table_names())
+    bind = db.get_bind()
+    have = set(inspect(bind).get_table_names())
     existing = [t for t in tables if t in have]
     if existing:
-        db.execute(text("TRUNCATE TABLE " + ", ".join(existing) + " RESTART IDENTITY CASCADE"))
+        if bind.dialect.name == "postgresql":
+            db.execute(text("TRUNCATE TABLE " + ", ".join(existing) + " RESTART IDENTITY CASCADE"))
+        else:
+            for table in reversed(existing):
+                db.execute(text(f"DELETE FROM {table}"))
     for veh in db.query(Vehicle).all():
         veh.live_status = "idle"
     for bal in db.query(StockBalance).all():
         bal.quantity = 0
     db.commit()
     print("Old dummy data cleared")
+
+
+def _clear_demo_masters(db) -> None:
+    """Remove seeded customers, products, and stock. Login users and companies stay."""
+    from sqlalchemy import inspect, text
+
+    tables = [
+        "customer_contacts",
+        "customers",
+        "stock_balances",
+        "products",
+        "audit_logs",
+    ]
+    bind = db.get_bind()
+    have = set(inspect(bind).get_table_names())
+    existing = [t for t in tables if t in have]
+    if existing:
+        if bind.dialect.name == "postgresql":
+            db.execute(text("TRUNCATE TABLE " + ", ".join(existing) + " RESTART IDENTITY CASCADE"))
+        else:
+            for table in existing:
+                db.execute(text(f"DELETE FROM {table}"))
+    db.commit()
+    print("Demo customers, products, and stock cleared")
 
 
 def _sync_demo_logistics(db) -> None:
@@ -1484,21 +1538,18 @@ def seed() -> None:
             _sync_role_perms(db)
             _sync_vehicles(db)
             _sync_logistics_drivers(db)
-            _sync_demo_customers(db)
-            _sync_demo_products(db)
-            if engine.dialect.name == "postgresql":
-                _clear_demo_transactions(db)
+            if _want_demo_transactions():
+                _sync_demo_customers(db)
                 _sync_demo_products(db)
-                if _want_demo_transactions():
-                    _seed_demo_transactions(db)
-                    print("Seed refreshed (users/master + full dummy transactions)")
-                else:
-                    print("Seed refreshed (users/master data only; dummy transactions cleared)")
-            elif _want_demo_transactions():
+                if engine.dialect.name == "postgresql":
+                    _clear_demo_transactions(db)
+                    _sync_demo_products(db)
                 _seed_demo_transactions(db)
                 print("Seed refreshed (users/master + full dummy transactions)")
             else:
-                print("Seed refreshed (users/master data only)")
+                _clear_demo_transactions(db)
+                _clear_demo_masters(db)
+                print("Seed refreshed (users/master data only; dummy data cleared)")
             return
 
         for code, desc in PERMISSIONS:
@@ -1522,14 +1573,18 @@ def seed() -> None:
         db.flush()
 
         companies = []
-        for i, brand in enumerate(COMPANY_BRANDING, start=1):
+        for brand in COMPANY_BRANDING:
             c = Company(
                 organization_id=org.id,
                 legal_name=brand["legal_name"],
                 trade_name=brand["trade_name"],
                 invoice_prefix=brand["invoice_prefix"],
                 logo_url=brand["logo_url"],
-                gstin=f"29AAAAA000{i}A1Z{i}",
+                gstin=brand["gstin"],
+                pan=brand["pan"],
+                address=brand["address"],
+                phone=brand["phone"],
+                email=brand["email"],
             )
             db.add(c)
             db.flush()
@@ -1618,9 +1673,9 @@ def seed() -> None:
         db.commit()
         _sync_vehicles(db)
         _sync_logistics_drivers(db)
-        _sync_demo_customers(db)
-        _sync_demo_products(db)
         if _want_demo_transactions():
+            _sync_demo_customers(db)
+            _sync_demo_products(db)
             _seed_demo_transactions(db)
             print(
                 "Seed complete (with dummy data): admin@avighnya.local / admin123 · "

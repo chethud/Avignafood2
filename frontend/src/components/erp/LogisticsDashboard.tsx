@@ -27,7 +27,6 @@ import {
   type TruckStateKey,
   type WorkPhase,
 } from "@/components/erp/logistics-flow";
-
 const STEP_INDEX: Record<WorkPhase, number> = {
   pick: 0,
   load: 1,

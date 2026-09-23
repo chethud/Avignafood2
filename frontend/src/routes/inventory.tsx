@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
 import { useMe } from "@/lib/me-context";
-import { byFirm, firms, inr, kpisFor, mt, stock as mockStock } from "@/lib/erp-data";
+import { firms, inr, mt } from "@/lib/erp-data";
 import { Badge, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
 import { cn } from "@/lib/utils";
 import { ChevronLeft } from "lucide-react";
@@ -87,15 +87,6 @@ function formatWhen(iso: string) {
 
 const LOW = 250;
 
-const DUMMY_STOCK = [
-  { name: "Nutragain Flour", unit: "KG", sku: "NF-500", qty: 1250, selling: 50 },
-  { name: "Besan", unit: "KG", sku: "BS-50", qty: 850, selling: 70 },
-  { name: "Suji", unit: "KG", sku: "SJ-50", qty: 620, selling: 80 },
-  { name: "Rava", unit: "KG", sku: "RV-50", qty: 480, selling: 60 },
-  { name: "Maida", unit: "KG", sku: "MD-50", qty: 210, selling: 45 },
-  { name: "Poha", unit: "KG", sku: "PH-50", qty: 180, selling: 55 },
-];
-
 function SalesStock() {
   const fromApi = useCompanies();
   const companies = FOUR_FIRMS.map((f) => fromApi.find((c) => c.id === f.id) || f);
@@ -122,12 +113,7 @@ function SalesStock() {
       }).catch(() => []),
     ]).then(([stock, products]) => {
       if (!stock.length) {
-        setRows(
-          DUMMY_STOCK.map((r) => ({
-            ...r,
-            qty: r.name === "Maida" || r.name === "Poha" ? r.qty : r.qty + ((companyId - 1) % 4) * 35,
-          })),
-        );
+        setRows([]);
         return;
       }
       const map = Object.fromEntries(products.map((p) => [p.id, p]));
@@ -344,20 +330,9 @@ function OpsInventory() {
         return;
       }
     } catch {
-      /* mock */
+      /* leave the list empty when the API is unavailable */
     }
-    setRows(
-      byFirm(mockStock, firm).map((s) => ({
-        key: s.batch,
-        batch: s.batch,
-        product: s.product,
-        manufacturer: s.manufacturer,
-        warehouse: s.warehouse,
-        qty: s.qty,
-        reserved: s.reserved,
-        age: s.age,
-      })),
-    );
+    setRows([]);
     setProducts([]);
     setWarehouses([]);
   }
@@ -507,6 +482,10 @@ function OpsInventory() {
 
   const total = useMemo(() => rows.reduce((a, s) => a + s.qty, 0), [rows]);
   const reserved = useMemo(() => rows.reduce((a, s) => a + s.reserved, 0), [rows]);
+  const stockValue = useMemo(
+    () => rows.reduce((a, s) => a + s.qty * (s.basePrice || 0), 0),
+    [rows],
+  );
 
   const warehousesInStock = useMemo(
     () => [...new Set(rows.map((r) => r.warehouse).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
@@ -569,7 +548,7 @@ function OpsInventory() {
             style: "currency",
             currency: "INR",
             maximumFractionDigits: 0,
-          }).format(kpisFor(firm).stockValue)}
+          }).format(stockValue)}
         />
       </div>
 

@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Link } from "@tanstack/react-router";
 import { api } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { greeting } from "@/lib/format";
@@ -104,7 +103,7 @@ export function SupervisorDashboard() {
         <Kpi label="Warehouses" value={data ? String(data.warehouses) : "—"} />
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+      <div className="mt-6">
         <Panel title="Quiet alerts">
           <ul className="space-y-3 text-sm">
             <li className="flex items-center justify-between rounded-xl border border-border px-3 py-2.5">
@@ -126,26 +125,6 @@ export function SupervisorDashboard() {
               </Badge>
             </li>
           </ul>
-        </Panel>
-
-        <Panel title="Supervisor workflow">
-          <p className="mb-4 text-sm text-muted-foreground">
-            After Accounts invoices, the order appears on Order desk. Allot date, window, vehicle and driver (Sales can too). Logistics then sees the trip.
-          </p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <Link to="/ops" className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium hover:bg-primary/10">
-              Order desk — allot driver →
-            </Link>
-            <Link to="/inventory" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
-              Warehouse & stock →
-            </Link>
-            <Link to="/purchases" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
-              Purchases / inward →
-            </Link>
-            <Link to="/leads" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
-              Sales team leads →
-            </Link>
-          </div>
         </Panel>
       </div>
         </>
