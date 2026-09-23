@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
+import { useMe } from "@/lib/me-context";
 import { byFirm, inr, mt, purchaseOrders as mockPOs } from "@/lib/erp-data";
 import { Badge, Bar, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
 import { cn } from "@/lib/utils";
@@ -10,7 +11,7 @@ export const Route = createFileRoute("/purchases")({
   head: () => ({
     meta: [
       { title: "Purchases · Avighna ERP" },
-      { name: "description", content: "Purchase bills and orders linked to customers — sales referral or direct." },
+      { name: "description", content: "Purchase orders from manufacturers — stock inward for the warehouse." },
       { property: "og:title", content: "Purchases · Avighna ERP" },
     ],
   }),
@@ -21,7 +22,7 @@ type Customer = { id: number; name: string; phone: string | null };
 
 type PurchaseApi = {
   id: number;
-  customer_id: number;
+  customer_id: number | null;
   source: string;
   manufacturer: string | null;
   product: string;
@@ -36,6 +37,7 @@ type PurchaseApi = {
 
 type Row = {
   id: string;
+  rawId?: number;
   customer: string;
   customerId?: number;
   source: string;
@@ -49,30 +51,40 @@ type Row = {
 };
 
 const SOURCES = [
-  { id: "sales_referral", label: "Sales referral" },
-  { id: "direct", label: "Direct" },
   { id: "manufacturer", label: "Manufacturer" },
+  { id: "direct", label: "Direct" },
+  { id: "sales_referral", label: "Sales referral" },
   { id: "other", label: "Other" },
 ] as const;
 
 const SOURCE_LABEL: Record<string, string> = Object.fromEntries(SOURCES.map((s) => [s.id, s.label]));
 
+const PO_STATUSES = ["Confirmed", "In transit", "Partially received", "Received"] as const;
+
+const STATUS_ROLES = new Set(["supervisor", "owner", "super_admin"]);
+
 const inputCls =
   "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary";
 
+function statusTone(status: string): "good" | "neutral" | "warn" {
+  if (status === "Received" || status === "received") return "good";
+  if (status === "Confirmed" || status === "approved") return "neutral";
+  return "warn";
+}
+
 function Purchases() {
+  const { me } = useMe();
   const { firm } = useCompany();
+  const role = me?.user.role;
+  const canUpdateStatus =
+    !role || STATUS_ROLES.has(role) || !!me?.permissions.includes("purchases.edit");
   const [rows, setRows] = useState<Row[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
   const [open, setOpen] = useState(false);
-  const [newCustomer, setNewCustomer] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [form, setForm] = useState({
-    customer_id: "",
-    customer_name: "",
-    customer_phone: "",
-    source: "sales_referral",
+    source: "manufacturer",
     manufacturer: "",
     product: "",
     quantity: "",
@@ -83,11 +95,8 @@ function Purchases() {
 
   async function loadCustomers() {
     try {
-      const list = await api<Customer[]>("/api/v1/customers");
-      setCustomers(list);
-      return list;
+      return await api<Customer[]>("/api/v1/customers");
     } catch {
-      setCustomers([]);
       return [] as Customer[];
     }
   }
@@ -97,26 +106,25 @@ function Purchases() {
     const names = Object.fromEntries(cust.map((c) => [c.id, c.name]));
     try {
       const data = await api<PurchaseApi[]>("/api/v1/purchases");
-      if (data.length) {
-        setRows(
-          data.map((p) => ({
-            id: `PO-${p.id}`,
-            customer: names[p.customer_id] || `Customer #${p.customer_id}`,
-            customerId: p.customer_id,
-            source: p.source,
-            manufacturer: p.manufacturer || "—",
-            product: p.product,
-            qty: Number(p.quantity) || 0,
-            received: Number(p.received) || 0,
-            value: Number(p.value) || 0,
-            eta: p.eta || "—",
-            status: p.status,
-          })),
-        );
-        return;
-      }
+      setRows(
+        data.map((p) => ({
+          id: `PO-${p.id}`,
+          rawId: p.id,
+          customer: p.customer_id ? names[p.customer_id] || `Customer #${p.customer_id}` : "—",
+          customerId: p.customer_id || undefined,
+          source: p.source,
+          manufacturer: p.manufacturer || "—",
+          product: p.product,
+          qty: Number(p.quantity) || 0,
+          received: Number(p.received) || 0,
+          value: Number(p.value) || 0,
+          eta: p.eta || "—",
+          status: p.status,
+        })),
+      );
+      return;
     } catch {
-      /* mock */
+      /* offline demo rows */
     }
     setRows(
       byFirm(mockPOs, firm).map((p) => ({
@@ -140,12 +148,8 @@ function Purchases() {
 
   function openCreate() {
     setError("");
-    setNewCustomer(false);
     setForm({
-      customer_id: customers[0] ? String(customers[0].id) : "",
-      customer_name: "",
-      customer_phone: "",
-      source: "sales_referral",
+      source: "manufacturer",
       manufacturer: "",
       product: "",
       quantity: "",
@@ -156,43 +160,29 @@ function Purchases() {
     setOpen(true);
   }
 
-  async function ensureCustomerId(): Promise<number> {
-    if (!newCustomer) {
-      const id = Number(form.customer_id);
-      if (!id) throw new Error("Select a customer");
-      return id;
-    }
-    const name = form.customer_name.trim();
-    if (!name) throw new Error("Enter the new customer name");
-    const created = await api<Customer>("/api/v1/customers", {
-      method: "POST",
-      body: JSON.stringify({
-        name,
-        phone: form.customer_phone.trim() || null,
-      }),
-    });
-    await loadCustomers();
-    return created.id;
-  }
-
   async function save(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError("");
     const qty = Number(form.quantity);
+    const manufacturer = form.manufacturer.trim();
+    if (!manufacturer) {
+      setError("Manufacturer is required");
+      setBusy(false);
+      return;
+    }
     if (!(qty > 0) || !form.product.trim()) {
       setError("Product and positive quantity are required");
       setBusy(false);
       return;
     }
     try {
-      const customerId = await ensureCustomerId();
       await api("/api/v1/purchases", {
         method: "POST",
         body: JSON.stringify({
-          customer_id: customerId,
+          customer_id: null,
           source: form.source,
-          manufacturer: form.manufacturer.trim() || null,
+          manufacturer,
           product: form.product.trim(),
           quantity: qty,
           received: 0,
@@ -205,47 +195,54 @@ function Purchases() {
       setOpen(false);
       await load();
     } catch (err) {
-      // offline: keep local row if customer create/purchase API fails after we have a name
-      if (newCustomer && form.customer_name.trim()) {
-        setRows((r) => [
-          {
-            id: `PO-L-${Date.now()}`,
-            customer: form.customer_name.trim(),
-            source: form.source,
-            manufacturer: form.manufacturer.trim() || "—",
-            product: form.product.trim(),
-            qty,
-            received: 0,
-            value: Number(form.value) || 0,
-            eta: form.eta.trim() || "—",
-            status: "Confirmed",
-          },
-          ...r,
-        ]);
-        setOpen(false);
-      } else if (!newCustomer && form.customer_id) {
-        const name = customers.find((c) => String(c.id) === form.customer_id)?.name || "Customer";
-        setRows((r) => [
-          {
-            id: `PO-L-${Date.now()}`,
-            customer: name,
-            source: form.source,
-            manufacturer: form.manufacturer.trim() || "—",
-            product: form.product.trim(),
-            qty,
-            received: 0,
-            value: Number(form.value) || 0,
-            eta: form.eta.trim() || "—",
-            status: "Confirmed",
-          },
-          ...r,
-        ]);
-        setOpen(false);
-      } else {
-        setError(err instanceof Error ? err.message : "Could not save purchase");
-      }
+      setError(err instanceof Error ? err.message : "Could not save purchase");
     } finally {
       setBusy(false);
+    }
+  }
+
+  function applyLocalStatus(row: Row, status: string) {
+    setRows((list) =>
+      list.map((r) =>
+        r.id === row.id
+          ? {
+              ...r,
+              status,
+              received: status === "Received" ? r.qty : r.received,
+            }
+          : r,
+      ),
+    );
+  }
+
+  async function updateStatus(row: Row, status: string) {
+    if (row.status === status) return;
+    setError("");
+    if (!row.rawId) {
+      applyLocalStatus(row, status);
+      return;
+    }
+    setStatusBusyId(row.id);
+    try {
+      const updated = await api<PurchaseApi>(`/api/v1/purchases/${row.rawId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+      setRows((list) =>
+        list.map((r) =>
+          r.rawId === row.rawId
+            ? {
+                ...r,
+                status: updated.status,
+                received: Number(updated.received) || 0,
+              }
+            : r,
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update status");
+    } finally {
+      setStatusBusyId(null);
     }
   }
 
@@ -257,7 +254,7 @@ function Purchases() {
     <>
       <PageHeader
         title="Purchases"
-        subtitle="Create a bill → auto load on Dispatch if a vehicle is free"
+        subtitle="Buy from manufacturer → track inbound → receive into warehouse"
         action={
           <button
             type="button"
@@ -269,35 +266,63 @@ function Purchases() {
         }
       />
 
+      {error && !open && <p className="mb-3 text-sm text-destructive">{error}</p>}
+
       <div className="grid gap-4 sm:grid-cols-3">
         <Kpi label="Open orders" value={String(openOrders.length)} meta="Awaiting full receipt" />
         <Kpi label="Incoming quantity" value={mt(incoming)} />
         <Kpi label="Committed value" value={inr(committed)} />
       </div>
 
-      <Panel title="Purchase orders" hint="Customer-linked bills" className="mt-6">
-        <Table head={["PO", "Customer", "Source", "Manufacturer", "Product", "Ordered", "Received", "Progress", "Value", "ETA", "Status"]}>
-          {rows.map((p) => (
-            <tr key={p.id}>
-              <Td className="font-medium">{p.id}</Td>
-              <Td>{p.customer}</Td>
-              <Td className="text-muted-foreground">{SOURCE_LABEL[p.source] || p.source}</Td>
-              <Td>{p.manufacturer}</Td>
-              <Td className="text-muted-foreground">{p.product}</Td>
-              <Td className="tabular-nums">{mt(p.qty)}</Td>
-              <Td className="tabular-nums">{mt(p.received)}</Td>
-              <Td>
-                <Bar value={p.qty ? (p.received / p.qty) * 100 : 0} />
-              </Td>
-              <Td className="tabular-nums">{inr(p.value)}</Td>
-              <Td className="text-muted-foreground">{p.eta}</Td>
-              <Td>
-                <Badge tone={p.status === "Received" ? "good" : p.status === "Confirmed" ? "neutral" : "warn"}>
-                  {p.status}
-                </Badge>
-              </Td>
-            </tr>
-          ))}
+      <Panel title="Purchase orders" hint="Manufacturer stock buys" className="mt-6">
+        <Table head={["PO", "Manufacturer", "Source", "Product", "Ordered", "Received", "Progress", "Value", "ETA", "Status"]}>
+          {rows.map((p) => {
+            const locked = p.status === "pending_approval" || p.status === "rejected";
+            const selectValue = PO_STATUSES.includes(p.status as (typeof PO_STATUSES)[number])
+              ? p.status
+              : p.status === "received"
+                ? "Received"
+                : p.status === "approved"
+                  ? "Confirmed"
+                  : p.status;
+            return (
+              <tr key={p.id}>
+                <Td className="font-medium">{p.id}</Td>
+                <Td>{p.manufacturer}</Td>
+                <Td className="text-muted-foreground">{SOURCE_LABEL[p.source] || p.source}</Td>
+                <Td className="text-muted-foreground">{p.product}</Td>
+                <Td className="tabular-nums">{mt(p.qty)}</Td>
+                <Td className="tabular-nums">{mt(p.received)}</Td>
+                <Td>
+                  <Bar value={p.qty ? (p.received / p.qty) * 100 : 0} />
+                </Td>
+                <Td className="tabular-nums">{inr(p.value)}</Td>
+                <Td className="text-muted-foreground">{p.eta}</Td>
+                <Td>
+                  {canUpdateStatus && !locked ? (
+                    <select
+                      className="min-w-[8.5rem] rounded-md border border-border bg-background px-2 py-1.5 text-xs font-medium text-foreground"
+                      value={selectValue}
+                      disabled={statusBusyId === p.id}
+                      onChange={(e) => void updateStatus(p, e.target.value)}
+                      aria-label={`Status for ${p.id}`}
+                    >
+                      {!PO_STATUSES.includes(selectValue as (typeof PO_STATUSES)[number]) && (
+                        <option value={selectValue}>{selectValue.replaceAll("_", " ")}</option>
+                      )}
+                      {PO_STATUSES.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <Badge tone={statusTone(p.status)}>{p.status.replaceAll("_", " ")}</Badge>
+                  )}
+                </Td>
+              </tr>
+            );
+          })}
         </Table>
         {!rows.length && <p className="py-8 text-center text-sm text-muted-foreground">No purchases yet.</p>}
       </Panel>
@@ -310,75 +335,19 @@ function Purchases() {
             className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl"
           >
             <h2 className="text-lg font-semibold">New purchase bill</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Pick or create a customer, then enter the purchase.</p>
+            <p className="mt-1 text-sm text-muted-foreground">Enter the manufacturer and what you are buying.</p>
 
             <div className="mt-4 space-y-3">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setNewCustomer(false)}
-                  className={cn(
-                    "flex-1 rounded-lg px-3 py-2 text-sm font-medium",
-                    !newCustomer ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
-                  )}
-                >
-                  Existing customer
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setNewCustomer(true)}
-                  className={cn(
-                    "flex-1 rounded-lg px-3 py-2 text-sm font-medium",
-                    newCustomer ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
-                  )}
-                >
-                  New customer
-                </button>
-              </div>
-
-              {!newCustomer ? (
-                <label className="block text-sm text-muted-foreground">
-                  Customer
-                  <select
-                    required={!newCustomer}
-                    className={inputCls}
-                    value={form.customer_id}
-                    onChange={(e) => setForm((f) => ({ ...f, customer_id: e.target.value }))}
-                  >
-                    <option value="">Select…</option>
-                    {customers.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                        {c.phone ? ` · ${c.phone}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                  {!customers.length && (
-                    <span className="mt-1 block text-xs text-warning">No customers yet — switch to New customer.</span>
-                  )}
-                </label>
-              ) : (
-                <>
-                  <label className="block text-sm text-muted-foreground">
-                    Customer name
-                    <input
-                      required
-                      className={inputCls}
-                      value={form.customer_name}
-                      onChange={(e) => setForm((f) => ({ ...f, customer_name: e.target.value }))}
-                    />
-                  </label>
-                  <label className="block text-sm text-muted-foreground">
-                    Phone
-                    <input
-                      type="tel"
-                      className={inputCls}
-                      value={form.customer_phone}
-                      onChange={(e) => setForm((f) => ({ ...f, customer_phone: e.target.value }))}
-                    />
-                  </label>
-                </>
-              )}
+              <label className="block text-sm text-muted-foreground">
+                Manufacturer <span className="text-destructive">*</span>
+                <input
+                  required
+                  className={inputCls}
+                  placeholder="e.g. Aditya Sugars"
+                  value={form.manufacturer}
+                  onChange={(e) => setForm((f) => ({ ...f, manufacturer: e.target.value }))}
+                />
+              </label>
 
               <label className="block text-sm text-muted-foreground">
                 Source
@@ -396,15 +365,7 @@ function Purchases() {
               </label>
 
               <label className="block text-sm text-muted-foreground">
-                Manufacturer / supplier
-                <input
-                  className={inputCls}
-                  value={form.manufacturer}
-                  onChange={(e) => setForm((f) => ({ ...f, manufacturer: e.target.value }))}
-                />
-              </label>
-              <label className="block text-sm text-muted-foreground">
-                Product
+                Product <span className="text-destructive">*</span>
                 <input
                   required
                   className={inputCls}
@@ -414,7 +375,7 @@ function Purchases() {
               </label>
               <div className="grid grid-cols-2 gap-3">
                 <label className="block text-sm text-muted-foreground">
-                  Qty (MT)
+                  Qty (MT) <span className="text-destructive">*</span>
                   <input
                     required
                     type="number"

@@ -7,12 +7,14 @@ from app.audit.service import write_audit
 from app.core.database import get_db
 from app.core.deps import AuthContext, require_owner, require_perms
 from app.core.models import Customer, Purchase, SalesOrder, SalesOrderStatus
-from app.core.schemas import PurchaseCreate, PurchaseOut, PurchaseReceiveIn
+from app.core.schemas import PurchaseCreate, PurchaseOut, PurchaseReceiveIn, PurchaseUpdate, StockInwardIn
 from app.dispatches.routes import create_load_for_purchase
 from app.inventory.routes import stock_inbound
-from app.core.schemas import StockInwardIn
 
 router = APIRouter(prefix="/purchases", tags=["purchases"])
+
+# Operational PO stages (UI). Approval/reject stay on dedicated endpoints.
+PO_STATUSES = ("Confirmed", "In transit", "Partially received", "Received")
 
 
 @router.get("", response_model=list[PurchaseOut])
@@ -36,21 +38,26 @@ def create_purchase(
     db: Session = Depends(get_db),
 ):
     company_id = auth.require_company()
-    customer = (
-        db.query(Customer)
-        .filter(
-            Customer.id == body.customer_id,
-            Customer.company_id == company_id,
-            Customer.organization_id == auth.organization_id,
+    mfr = (body.manufacturer or "").strip()
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Manufacturer is required")
+    if body.customer_id is not None:
+        customer = (
+            db.query(Customer)
+            .filter(
+                Customer.id == body.customer_id,
+                Customer.company_id == company_id,
+                Customer.organization_id == auth.organization_id,
+            )
+            .first()
         )
-        .first()
-    )
-    if not customer:
-        raise HTTPException(status_code=400, detail="Customer not found — create the customer first")
+        if not customer:
+            raise HTTPException(status_code=400, detail="Customer not found — create the customer first")
     if body.quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
 
     data = body.model_dump()
+    data["manufacturer"] = mfr
     is_pr = bool(data.get("sales_order_id"))
     if is_pr:
         data["status"] = "pending_approval"
@@ -72,11 +79,12 @@ def create_purchase(
         organization_id=auth.organization_id,
         company_id=company_id,
         user_id=auth.user.id,
-        detail=f"customer={body.customer_id} product={body.product} source={body.source}",
+        detail=f"manufacturer={mfr} customer={body.customer_id} product={body.product} source={body.source}",
     )
 
+    # Auto-dispatch only when this PO is tied to a customer fulfilment (not stock buy from manufacturer).
     dispatch_id = None
-    if not is_pr:
+    if not is_pr and body.customer_id is not None:
         load = create_load_for_purchase(
             db,
             auth=auth,
@@ -102,6 +110,79 @@ def create_purchase(
     db.commit()
     db.refresh(row)
     return PurchaseOut.model_validate(row).model_copy(update={"dispatch_id": dispatch_id})
+
+
+@router.patch("/{purchase_id}", response_model=PurchaseOut)
+def update_purchase(
+    purchase_id: int,
+    body: PurchaseUpdate,
+    auth: AuthContext = Depends(require_perms("purchases.edit")),
+    db: Session = Depends(get_db),
+):
+    """Supervisor / Owner / Super Admin update PO status (In transit → Received, etc.)."""
+    company_id = auth.require_company()
+    row = (
+        db.query(Purchase)
+        .filter(
+            Purchase.id == purchase_id,
+            Purchase.company_id == company_id,
+            Purchase.organization_id == auth.organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+
+    data = body.model_dump(exclude_unset=True)
+    if "status" in data:
+        status = data["status"]
+        if status not in PO_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Status must be one of {', '.join(PO_STATUSES)}")
+        # Don't clobber Owner approval workflow via this endpoint
+        if row.status in ("pending_approval", "rejected"):
+            raise HTTPException(
+                status_code=400,
+                detail="Purchase is pending Owner approval or was rejected — use approve/reject",
+            )
+        data["status"] = status
+        if status == "Received" and "received" not in data:
+            data["received"] = row.quantity
+
+    if "received" in data:
+        recv = data["received"]
+        if recv is None or recv < 0:
+            raise HTTPException(status_code=400, detail="Received quantity must be ≥ 0")
+        if recv > row.quantity:
+            raise HTTPException(status_code=400, detail="Received cannot exceed ordered quantity")
+        if "status" not in data:
+            if recv <= 0:
+                data["status"] = "In transit" if row.status == "In transit" else "Confirmed"
+            elif recv < row.quantity:
+                data["status"] = "Partially received"
+            else:
+                data["status"] = "Received"
+
+    for k, v in data.items():
+        setattr(row, k, v)
+
+    if row.status == "Received" and row.sales_order_id:
+        so = db.query(SalesOrder).filter(SalesOrder.id == row.sales_order_id).first()
+        if so and so.status in (SalesOrderStatus.CONFIRMED, SalesOrderStatus.INVOICED):
+            so.ops_status = "ready"
+
+    write_audit(
+        db,
+        action="update",
+        entity_type="purchase",
+        entity_id=row.id,
+        organization_id=auth.organization_id,
+        company_id=company_id,
+        user_id=auth.user.id,
+        detail=f"status={row.status} received={row.received}",
+    )
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 @router.post("/{purchase_id}/approve", response_model=PurchaseOut)

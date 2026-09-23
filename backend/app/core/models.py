@@ -337,14 +337,14 @@ class StockMovement(Base):
 
 
 class Purchase(Base):
-    """Purchase bill / PO linked to a customer (e.g. sales referral fulfilment)."""
+    """Purchase bill / PO from a manufacturer; optional customer when fulfilling a sales demand."""
 
     __tablename__ = "purchases"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
-    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), nullable=False)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
     source: Mapped[str] = mapped_column(String(40), default="direct")  # sales_referral | direct | manufacturer | other
     manufacturer: Mapped[str | None] = mapped_column(String(200))
     product: Mapped[str] = mapped_column(String(200), nullable=False)

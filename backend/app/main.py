@@ -18,6 +18,7 @@ from app.leads.routes import router as leads_router
 from app.payments.routes import router as payments_router
 from app.products.routes import router as products_router
 from app.purchases.routes import router as purchases_router
+from app.purchases.ensure_schema import ensure_purchases_schema
 from app.quotations.routes import router as quotations_router
 from app.sales.routes import router as sales_router
 from app.sales.ensure_schema import ensure_sales_schema
@@ -35,6 +36,7 @@ app = FastAPI(title="Avighnya Foods API", version="0.1.0")
 # ponytail: create missing tables without a migration tool
 Base.metadata.create_all(bind=engine)
 ensure_sales_schema(engine)
+ensure_purchases_schema(engine)
 _ensure_user_photo_column()
 # Postgres-only DDL (SERIAL / TIMESTAMP WITH TIME ZONE) — skip on local SQLite
 if engine.dialect.name == "postgresql":

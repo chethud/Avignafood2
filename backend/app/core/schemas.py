@@ -382,9 +382,9 @@ class StockMovementOut(ORMModel):
 
 # ---- Purchases ----
 class PurchaseCreate(BaseModel):
-    customer_id: int
+    customer_id: int | None = None
     source: str = "direct"
-    manufacturer: str | None = None
+    manufacturer: str
     product: str
     quantity: Decimal
     received: Decimal = Decimal("0")
@@ -399,7 +399,7 @@ class PurchaseCreate(BaseModel):
 class PurchaseOut(ORMModel):
     id: int
     company_id: int
-    customer_id: int
+    customer_id: int | None
     source: str
     manufacturer: str | None
     product: str
@@ -418,6 +418,15 @@ class PurchaseOut(ORMModel):
 class PurchaseReceiveIn(BaseModel):
     batch: str | None = None
     manufacturer: str | None = None
+    notes: str | None = None
+
+
+class PurchaseUpdate(BaseModel):
+    """Supervisor / admin operational status (and optional received qty)."""
+
+    status: str | None = None
+    received: Decimal | None = None
+    eta: str | None = None
     notes: str | None = None
 
 
