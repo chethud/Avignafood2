@@ -52,14 +52,15 @@ export function ProductTour() {
   const steps = tourStepsFor(state?.role || me?.user.role);
   const step = state ? steps[state.step] : null;
   const index = state?.step ?? 0;
+  const stepKey = state ? `${state.role}:${state.step}:${step?.route || ""}` : "";
 
-  // Navigate to the step's route when tour is active
+  // Navigate when the tour step changes (not on every user navigation race)
   useEffect(() => {
     if (!state || !step) return;
-    if (pathname !== step.route) {
-      void navigate({ to: step.route });
-    }
-  }, [state, step, pathname, navigate]);
+    if (pathname === step.route) return;
+    void navigate({ to: step.route });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when step identity changes
+  }, [stepKey]);
 
   useLayoutEffect(() => {
     if (!state || !step) {

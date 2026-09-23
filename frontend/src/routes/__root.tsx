@@ -40,9 +40,24 @@ function NotFoundComponent() {
 function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
+  const msg = error?.message || String(error);
+  const isChunk =
+    /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk|ChunkLoadError/i.test(
+      msg,
+    );
+
   useEffect(() => {
     reportLovableError(error, { boundary: "tanstack_root_error_component" });
   }, [error]);
+
+  useEffect(() => {
+    // Stale Vercel deploy: old HTML pointing at renamed chunks — hard reload once
+    if (!isChunk || typeof window === "undefined") return;
+    const key = "avighna.chunk-reload";
+    if (sessionStorage.getItem(key) === msg) return;
+    sessionStorage.setItem(key, msg);
+    window.location.reload();
+  }, [isChunk, msg]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -51,15 +66,26 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
           This page didn't load
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Something went wrong on our end. You can try refreshing or head back home.
+          {isChunk
+            ? "The app was updated. Refresh to load the latest version."
+            : "Something went wrong on our end. You can try refreshing or head back home."}
         </p>
+        {msg && !isChunk ? (
+          <p className="mt-3 break-words rounded-lg border border-border bg-secondary/40 px-3 py-2 text-left text-xs text-muted-foreground">
+            {msg}
+          </p>
+        ) : null}
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           <button
             onClick={() => {
+              if (isChunk) {
+                window.location.reload();
+                return;
+              }
               router.invalidate();
               reset();
             }}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90"
           >
             Try again
           </button>
