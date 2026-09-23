@@ -17,6 +17,21 @@ import { InvoiceRequestPopup, useInvoiceRequests } from "@/components/erp/Invoic
 import { usePendingApprovals } from "@/components/erp/ApprovalPopup";
 import { ProductTour } from "@/components/erp/ProductTour";
 import { Badge } from "@/components/erp/ui-bits";
+import { API_URL } from "@/lib/api";
+
+const RENDER_PING_MS = 5 * 60 * 1000;
+
+function useRenderKeepAlive() {
+  useEffect(() => {
+    if (!API_URL) return;
+    const ping = () => {
+      void fetch(`${API_URL}/health`, { method: "GET", mode: "cors", cache: "no-store" }).catch(() => undefined);
+    };
+    ping();
+    const id = window.setInterval(ping, RENDER_PING_MS);
+    return () => window.clearInterval(id);
+  }, []);
+}
 
 function ProfileAvatar({
   name,
@@ -437,6 +452,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { items: invoiceRequests, dismiss: dismissInvoice, canInvoice } = useInvoiceRequests();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const invoiceAutoPrompted = useRef(false);
+  useRenderKeepAlive();
 
   useEffect(() => {
     if (!getToken()) navigate({ to: "/login" });

@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { CircleHelp, Eye, EyeOff } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { API_URL, setAuth, api } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { firms } from "@/lib/erp-data";
@@ -9,6 +9,14 @@ import { applyDefaultFirmForRole } from "@/lib/company-context";
 export const Route = createFileRoute("/login")({
   component: LoginPage,
 });
+
+const DEMO_LOGINS = [
+  { role: "Sales", email: "sales@avighnya.local", password: "sales123" },
+  { role: "Accounts", email: "accounts@avighnya.local", password: "accounts123" },
+  { role: "Logistics", email: "logistics@avighnya.local", password: "logistics123" },
+  { role: "Supervisor", email: "supervisor@avighnya.local", password: "super123" },
+  { role: "Owner", email: "owner@avighnya.local", password: "owner123" },
+] as const;
 
 function LoginPage() {
   const navigate = useNavigate();
@@ -19,6 +27,17 @@ function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [askGuide, setAskGuide] = useState(false);
+
+  // Wake Render API while the login page is open (free tier sleeps)
+  useEffect(() => {
+    if (!API_URL) return;
+    const ping = () => {
+      void fetch(`${API_URL}/health`, { method: "GET", mode: "cors", cache: "no-store" }).catch(() => undefined);
+    };
+    ping();
+    const id = window.setInterval(ping, 5 * 60 * 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -70,8 +89,14 @@ function LoginPage() {
     navigate({ to: "/" });
   }
 
+  function fillDemo(row: (typeof DEMO_LOGINS)[number]) {
+    setEmail(row.email);
+    setPassword(row.password);
+    setError("");
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
       <form onSubmit={onSubmit} className="w-full max-w-md rounded-2xl border border-border bg-card p-8 shadow-[var(--shadow-soft)]">
         <div className="mb-4 flex flex-wrap items-center justify-center gap-3">
           {firms.filter((f) => f.logo).map((f) => (
@@ -95,7 +120,7 @@ function LoginPage() {
             required
           />
         </label>
-        <label className="mb-6 block text-sm text-muted-foreground">
+        <label className="mb-4 block text-sm text-muted-foreground">
           Password
           <span className="relative mt-1 block">
             <input
@@ -120,6 +145,28 @@ function LoginPage() {
             </button>
           </span>
         </label>
+
+        <div className="mb-5 rounded-xl border border-border bg-secondary/30 px-3 py-3">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Login credentials</p>
+          <ul className="space-y-1.5">
+            {DEMO_LOGINS.map((row) => (
+              <li key={row.email}>
+                <button
+                  type="button"
+                  onClick={() => fillDemo(row)}
+                  className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-background"
+                >
+                  <span className="font-medium">{row.role}</span>
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">
+                    {row.email} · {row.password}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-muted-foreground">Tap a role to fill email & password.</p>
+        </div>
+
         <button
           type="submit"
           disabled={loading}
