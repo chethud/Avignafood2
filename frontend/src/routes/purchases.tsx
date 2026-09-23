@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api } from "@/lib/api";
 import { useCompany } from "@/lib/company-context";
 import { useMe } from "@/lib/me-context";
-import { byFirm, inr, mt, purchaseOrders as mockPOs } from "@/lib/erp-data";
+import { inr, mt } from "@/lib/erp-data";
 import { Badge, Bar, Kpi, PageHeader, Panel, Table, Td } from "@/components/erp/ui-bits";
 import { cn } from "@/lib/utils";
 
