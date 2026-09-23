@@ -307,6 +307,11 @@ def billable_orders(
     for so in rows:
         if so.id in invoiced:
             continue
+        from app.sales.ops import can_raise_invoice, delivery_labels
+
+        ok, _ = can_raise_invoice(so)
+        if not ok:
+            continue
         customer = db.query(Customer).filter(Customer.id == so.customer_id).first()
         qty = sum((ln.quantity for ln in so.lines), Decimal("0"))
         sub = Decimal("0")
@@ -321,6 +326,7 @@ def billable_orders(
         due = _customer_outstanding(db, company_id, so.customer_id)
         limit = (customer.credit_limit if customer else Decimal("0")) or Decimal("0")
         projected = due + est
+        vehicle, _ = delivery_labels(db, so)
         out.append(
             BillableOrderOut(
                 sales_order_id=so.id,
@@ -329,7 +335,7 @@ def billable_orders(
                 address=(customer.shipping_address or customer.address) if customer else None,
                 ops_status=so.ops_status,
                 logistics_status=None,
-                vehicle=None,
+                vehicle=vehicle,
                 line_count=len(so.lines),
                 qty=qty,
                 estimated_total=est,
@@ -644,6 +650,11 @@ def invoice_from_order(
         raise HTTPException(status_code=404, detail="Sales order not found")
     if so.status != SalesOrderStatus.CONFIRMED:
         raise HTTPException(status_code=400, detail="Super Admin must approve the order before invoicing")
+    from app.sales.ops import can_raise_invoice
+
+    ok, block = can_raise_invoice(so)
+    if not ok:
+        raise HTTPException(status_code=400, detail=block or "Vehicle must be confirmed before invoicing")
     existing = db.query(Invoice).filter(Invoice.sales_order_id == so.id).first()
     if existing:
         raise HTTPException(status_code=400, detail="Invoice already exists for this order")

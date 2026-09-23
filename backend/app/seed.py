@@ -226,6 +226,11 @@ def _ensure_logo_column() -> None:
     _ensure_column("vehicles", "kind", "ALTER TABLE vehicles ADD COLUMN kind VARCHAR(40) DEFAULT 'truck'")
     _ensure_column("invoices", "dispatch_id", "ALTER TABLE invoices ADD COLUMN dispatch_id INTEGER")
     _ensure_column("sales_orders", "ops_status", "ALTER TABLE sales_orders ADD COLUMN ops_status VARCHAR(40) DEFAULT 'pending_approval'")
+    _ensure_column("sales_orders", "delivery_mode", "ALTER TABLE sales_orders ADD COLUMN delivery_mode VARCHAR(40)")
+    _ensure_column("sales_orders", "planned_vehicle_id", "ALTER TABLE sales_orders ADD COLUMN planned_vehicle_id INTEGER")
+    _ensure_column("sales_orders", "planned_driver_user_id", "ALTER TABLE sales_orders ADD COLUMN planned_driver_user_id INTEGER")
+    _ensure_column("sales_orders", "planned_slot", "ALTER TABLE sales_orders ADD COLUMN planned_slot VARCHAR(20)")
+    _ensure_column("sales_orders", "planned_on_date", "ALTER TABLE sales_orders ADD COLUMN planned_on_date DATE")
     _ensure_column("purchases", "sales_order_id", "ALTER TABLE purchases ADD COLUMN sales_order_id INTEGER")
     _ensure_column("purchases", "product_id", "ALTER TABLE purchases ADD COLUMN product_id INTEGER")
     _ensure_column("dispatches", "sales_order_id", "ALTER TABLE dispatches ADD COLUMN sales_order_id INTEGER")
@@ -782,6 +787,25 @@ def _sync_demo_logistics(db) -> None:
             status=SalesOrderStatus.CONFIRMED,
         )
         bill_so.notes = "accounts-demo-awaiting-invoice"
+        bill_so.delivery_mode = "own_vehicle"
+        if truck:
+            bill_so.planned_vehicle_id = truck.id
+
+        pending_vehicle_so = _make_demo_so(
+            db,
+            org_id=org_id,
+            company_id=company.id,
+            warehouse_id=wh.id,
+            customer_id=xyz.id,
+            user_id=uid,
+            ops_status="pending_vehicle_confirm",
+            lines=[(maida, 60, 45)],
+            status=SalesOrderStatus.CONFIRMED,
+        )
+        pending_vehicle_so.notes = "supervisor-demo-pending-vehicle"
+        pending_vehicle_so.delivery_mode = "own_vehicle"
+        if truck:
+            pending_vehicle_so.planned_vehicle_id = truck.id
 
         done_so = _make_demo_so(
             db,

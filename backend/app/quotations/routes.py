@@ -106,6 +106,8 @@ def create_quotation(
             lead.status = LeadStatus.QUOTATION
 
     needs_approval = False
+    from app.sales.ops import apply_delivery_plan, normalize_delivery_mode
+
     q = Quotation(
         organization_id=auth.organization_id,
         company_id=company_id,
@@ -114,6 +116,14 @@ def create_quotation(
         notes=body.notes,
         created_by_id=auth.user.id,
         status=QuotationStatus.DRAFT,
+    )
+    apply_delivery_plan(
+        q,
+        delivery_mode=normalize_delivery_mode(body.delivery_mode) or "own_vehicle",
+        planned_vehicle_id=body.planned_vehicle_id,
+        planned_driver_user_id=body.planned_driver_user_id,
+        planned_slot=body.planned_slot,
+        planned_on_date=body.planned_on_date,
     )
     db.add(q)
     db.flush()

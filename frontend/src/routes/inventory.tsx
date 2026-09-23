@@ -71,6 +71,43 @@ type Row = {
 const inputCls =
   "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary";
 
+const STOCK_UNITS = [
+  { value: "KG", label: "Kilogram (KG)" },
+  { value: "MT", label: "Metric ton (MT)" },
+  { value: "G", label: "Gram (G)" },
+  { value: "QTL", label: "Quintal (QTL)" },
+  { value: "L", label: "Litre (L)" },
+  { value: "PCS", label: "Pieces (PCS)" },
+] as const;
+
+type StockUnit = (typeof STOCK_UNITS)[number]["value"];
+
+function asStockUnit(raw: string | null | undefined, fallback: StockUnit = "KG"): StockUnit {
+  const code = (raw || "").trim().toUpperCase();
+  return STOCK_UNITS.some((u) => u.value === code) ? (code as StockUnit) : fallback;
+}
+
+/** Convert qty from `from` into `to`. Returns null if units are incompatible. */
+function convertQty(qty: number, from: string, to: string): number | null {
+  const a = (from || "KG").trim().toUpperCase();
+  const b = (to || "KG").trim().toUpperCase();
+  if (a === b) return qty;
+  const toKg: Record<string, number> = {
+    G: 0.001,
+    GRAM: 0.001,
+    KG: 1,
+    QTL: 100,
+    QUINTAL: 100,
+    MT: 1000,
+    TON: 1000,
+    TONNE: 1000,
+  };
+  const liquid: Record<string, number> = { ML: 0.001, L: 1, LITRE: 1, LITER: 1 };
+  if (toKg[a] != null && toKg[b] != null) return (qty * toKg[a]) / toKg[b];
+  if (liquid[a] != null && liquid[b] != null) return (qty * liquid[a]) / liquid[b];
+  return null;
+}
+
 function formatWhen(iso: string) {
   try {
     return new Date(iso).toLocaleString("en-IN", {
@@ -279,6 +316,8 @@ function Inventory() {
 
 function OpsInventory() {
   const { firm } = useCompany();
+  const companies = useCompanies();
+  const isAllCompanies = firm === "all";
   const [rows, setRows] = useState<Row[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -288,22 +327,41 @@ function OpsInventory() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [inboundProducts, setInboundProducts] = useState<Product[]>([]);
+  const [inboundWarehouses, setInboundWarehouses] = useState<Warehouse[]>([]);
+  const [inboundCatalogLoading, setInboundCatalogLoading] = useState(false);
 
   const [productForm, setProductForm] = useState({
+    company_id: "",
     sku: "",
     name: "",
-    unit: "MT",
+    unit: "KG" as StockUnit,
     base_price: "0",
     selling_price: "0",
   });
   const [inboundForm, setInboundForm] = useState({
+    company_id: "",
     product_id: "",
     warehouse_id: "",
     quantity: "",
+    unit: "KG" as StockUnit,
     batch: "",
     manufacturer: "",
     notes: "",
   });
+
+  const activeCompanyId = useMemo(() => {
+    if (isAllCompanies) return null;
+    return firms.find((f) => f.id === firm)?.companyId ?? null;
+  }, [firm, isAllCompanies]);
+
+  const companyOptions = companies.length
+    ? companies
+    : FOUR_FIRMS;
+
+  /** Catalog for the company picked in the inbound modal */
+  const inboundProductOptions = inboundForm.company_id ? inboundProducts : products;
+  const inboundWarehouseOptions = inboundForm.company_id ? inboundWarehouses : warehouses;
 
   async function load() {
     try {
@@ -401,26 +459,51 @@ function OpsInventory() {
     ]);
   }
 
+  function defaultWarehouseId(list: Warehouse[]) {
+    const def = list.find((w) => w.is_default);
+    if (def) return String(def.id);
+    return list[0] ? String(list[0].id) : "";
+  }
+
+  function resolveModalCompanyId(formCompanyId: string): number | undefined {
+    const id = Number(formCompanyId);
+    if (id > 0) return id;
+    return activeCompanyId ?? undefined;
+  }
+
   function openProduct() {
     setError("");
-    setProductForm({ sku: "", name: "", unit: "MT", base_price: "0", selling_price: "0" });
+    setProductForm({
+      company_id: activeCompanyId ? String(activeCompanyId) : "",
+      sku: "",
+      name: "",
+      unit: "KG",
+      base_price: "0",
+      selling_price: "0",
+    });
     setModal("product");
   }
 
   function openInbound(prefillProductId?: number) {
     setError("");
-    setInboundForm({
-      product_id: prefillProductId
+    setInboundProducts([]);
+    setInboundWarehouses([]);
+    const companyId = activeCompanyId ? String(activeCompanyId) : "";
+    const usePageCatalog = Boolean(companyId) && !isAllCompanies;
+    const pid = usePageCatalog
+      ? prefillProductId
         ? String(prefillProductId)
         : products[0]
           ? String(products[0].id)
-          : "",
-      warehouse_id: warehouses.find((w) => w.is_default)?.id
-        ? String(warehouses.find((w) => w.is_default)!.id)
-        : warehouses[0]
-          ? String(warehouses[0].id)
-          : "",
+          : ""
+      : "";
+    const picked = products.find((p) => String(p.id) === pid);
+    setInboundForm({
+      company_id: companyId,
+      product_id: pid,
+      warehouse_id: usePageCatalog ? defaultWarehouseId(warehouses) : "",
       quantity: "",
+      unit: asStockUnit(picked?.unit, "KG"),
       batch: "",
       manufacturer: "",
       notes: "",
@@ -428,17 +511,68 @@ function OpsInventory() {
     setModal("inbound");
   }
 
+  useEffect(() => {
+    if (modal !== "inbound") return;
+    const cid = Number(inboundForm.company_id);
+    if (!(cid > 0)) {
+      setInboundProducts([]);
+      setInboundWarehouses([]);
+      return;
+    }
+    let cancelled = false;
+    setInboundCatalogLoading(true);
+    Promise.all([
+      api<Product[]>("/api/v1/products", { companyId: cid }).catch(() => [] as Product[]),
+      api<Warehouse[]>("/api/v1/inventory/warehouses", { companyId: cid }).catch(() => [] as Warehouse[]),
+    ])
+      .then(([productRows, whRows]) => {
+        if (cancelled) return;
+        setInboundProducts(productRows);
+        setInboundWarehouses(whRows);
+        setInboundForm((f) => {
+          if (f.company_id !== String(cid)) return f;
+          const productStillValid = productRows.some((p) => String(p.id) === f.product_id);
+          const whStillValid = whRows.some((w) => String(w.id) === f.warehouse_id);
+          const nextProductId = productStillValid
+            ? f.product_id
+            : productRows[0]
+              ? String(productRows[0].id)
+              : "";
+          const picked = productRows.find((p) => String(p.id) === nextProductId);
+          return {
+            ...f,
+            product_id: nextProductId,
+            warehouse_id: whStillValid ? f.warehouse_id : defaultWarehouseId(whRows),
+            unit: asStockUnit(picked?.unit, f.unit),
+          };
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setInboundCatalogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modal, inboundForm.company_id]);
+
   async function saveProduct(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError("");
+    const companyId = resolveModalCompanyId(productForm.company_id);
+    if (companyId == null) {
+      setError("Pick a company for this product");
+      setBusy(false);
+      return;
+    }
     try {
       await api("/api/v1/products", {
         method: "POST",
+        companyId,
         body: JSON.stringify({
           sku: productForm.sku.trim(),
           name: productForm.name.trim(),
-          unit: productForm.unit.trim() || "MT",
+          unit: productForm.unit || "KG",
           base_price: Number(productForm.base_price) || 0,
           selling_price: Number(productForm.selling_price) || Number(productForm.base_price) || 0,
         }),
@@ -456,22 +590,46 @@ function OpsInventory() {
     e.preventDefault();
     setBusy(true);
     setError("");
-    const qty = Number(inboundForm.quantity);
-    if (!inboundForm.product_id || !(qty > 0)) {
+    const companyId = resolveModalCompanyId(inboundForm.company_id);
+    if (companyId == null) {
+      setError("Pick a company for this inbound");
+      setBusy(false);
+      return;
+    }
+    const qtyEntered = Number(inboundForm.quantity);
+    if (!inboundForm.product_id || !(qtyEntered > 0)) {
       setError("Pick a product and enter a positive quantity");
+      setBusy(false);
+      return;
+    }
+    const catalog = inboundForm.company_id ? inboundProducts : products;
+    const product = catalog.find((p) => String(p.id) === inboundForm.product_id);
+    const stockUnit = asStockUnit(product?.unit, inboundForm.unit);
+    const qty = convertQty(qtyEntered, inboundForm.unit, stockUnit);
+    if (qty == null) {
+      setError(`Cannot convert ${inboundForm.unit} into product unit ${stockUnit}. Use ${stockUnit}.`);
       setBusy(false);
       return;
     }
     try {
       await api("/api/v1/inventory/stock/inbound", {
         method: "POST",
+        companyId,
         body: JSON.stringify({
           product_id: Number(inboundForm.product_id),
           warehouse_id: inboundForm.warehouse_id ? Number(inboundForm.warehouse_id) : null,
           quantity: qty,
           batch: inboundForm.batch.trim() || null,
           manufacturer: inboundForm.manufacturer.trim() || null,
-          notes: inboundForm.notes.trim() || null,
+          notes:
+            [
+              inboundForm.notes.trim(),
+              inboundForm.unit !== stockUnit
+                ? `Entered ${qtyEntered} ${inboundForm.unit} → ${qty} ${stockUnit}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || null,
         }),
       });
       setModal(null);
@@ -480,7 +638,7 @@ function OpsInventory() {
         openDetail({ ...selected });
       }
     } catch (err) {
-      if (products.length === 0) {
+      if (catalog.length === 0) {
         const productName = inboundForm.product_id || "New stock";
         const next: Row = {
           key: `local-${Date.now()}`,
@@ -491,6 +649,7 @@ function OpsInventory() {
           qty,
           reserved: 0,
           age: 0,
+          unit: stockUnit,
         };
         setRows((r) => [next, ...r]);
         setModal(null);
@@ -690,8 +849,26 @@ function OpsInventory() {
             className="relative z-10 w-full max-h-[88dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl"
           >
             <h2 className="text-lg font-semibold">Add product</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Creates a catalog item for the active company.</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pick which company this product belongs to — no need to change the dashboard.
+            </p>
             <div className="mt-4 space-y-3">
+              <label className="block text-sm text-muted-foreground">
+                Company
+                <select
+                  required
+                  className={inputCls}
+                  value={productForm.company_id}
+                  onChange={(e) => setProductForm((f) => ({ ...f, company_id: e.target.value }))}
+                >
+                  <option value="">Select company</option>
+                  {companyOptions.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.trade_name || c.legal_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="block text-sm text-muted-foreground">
                 SKU
                 <input
@@ -713,11 +890,17 @@ function OpsInventory() {
               <div className="grid grid-cols-2 gap-3">
                 <label className="block text-sm text-muted-foreground">
                   Unit
-                  <input
+                  <select
                     className={inputCls}
                     value={productForm.unit}
-                    onChange={(e) => setProductForm((f) => ({ ...f, unit: e.target.value }))}
-                  />
+                    onChange={(e) => setProductForm((f) => ({ ...f, unit: e.target.value as StockUnit }))}
+                  >
+                    {STOCK_UNITS.map((u) => (
+                      <option key={u.value} value={u.value}>
+                        {u.label}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label className="block text-sm text-muted-foreground">
                   Wholesale / floor (₹)
@@ -745,7 +928,7 @@ function OpsInventory() {
             <div className="mt-5 grid grid-cols-2 gap-2">
               <button
                 type="submit"
-                disabled={busy}
+                disabled={busy || !productForm.company_id}
                 className={cn("rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground", busy && "opacity-60")}
               >
                 {busy ? "Saving…" : "Save"}
@@ -766,20 +949,57 @@ function OpsInventory() {
             className="relative z-10 w-full max-h-[88dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl"
           >
             <h2 className="text-lg font-semibold">Stock inbound</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Adds quantity to on-hand for a product.</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Choose the company first; products and warehouses load for that firm only.
+            </p>
             <div className="mt-4 space-y-3">
-              {products.length > 0 ? (
+              <label className="block text-sm text-muted-foreground">
+                Company
+                <select
+                  required
+                  className={inputCls}
+                  value={inboundForm.company_id}
+                  onChange={(e) =>
+                    setInboundForm((f) => ({
+                      ...f,
+                      company_id: e.target.value,
+                      product_id: "",
+                      warehouse_id: "",
+                    }))
+                  }
+                >
+                  <option value="">Select company</option>
+                  {companyOptions.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.trade_name || c.legal_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {!inboundForm.company_id ? (
+                <p className="text-sm text-muted-foreground">Select a company to see its products.</p>
+              ) : inboundCatalogLoading ? (
+                <p className="text-sm text-muted-foreground">Loading products…</p>
+              ) : inboundProductOptions.length > 0 ? (
                 <label className="block text-sm text-muted-foreground">
                   Product
                   <select
                     required
                     className={inputCls}
                     value={inboundForm.product_id}
-                    onChange={(e) => setInboundForm((f) => ({ ...f, product_id: e.target.value }))}
+                    onChange={(e) => {
+                      const pid = e.target.value;
+                      const picked = inboundProductOptions.find((p) => String(p.id) === pid);
+                      setInboundForm((f) => ({
+                        ...f,
+                        product_id: pid,
+                        unit: asStockUnit(picked?.unit, f.unit),
+                      }));
+                    }}
                   >
-                    {products.map((p) => (
+                    {inboundProductOptions.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} ({p.sku})
+                        {p.name} ({p.sku}) · {p.unit || "KG"}
                       </option>
                     ))}
                   </select>
@@ -796,7 +1016,7 @@ function OpsInventory() {
                   />
                 </label>
               )}
-              {warehouses.length > 0 && (
+              {inboundForm.company_id && inboundWarehouseOptions.length > 0 && (
                 <label className="block text-sm text-muted-foreground">
                   Warehouse
                   <select
@@ -804,7 +1024,7 @@ function OpsInventory() {
                     value={inboundForm.warehouse_id}
                     onChange={(e) => setInboundForm((f) => ({ ...f, warehouse_id: e.target.value }))}
                   >
-                    {warehouses.map((w) => (
+                    {inboundWarehouseOptions.map((w) => (
                       <option key={w.id} value={w.id}>
                         {w.name}
                         {w.is_default ? " (default)" : ""}
@@ -813,18 +1033,54 @@ function OpsInventory() {
                   </select>
                 </label>
               )}
-              <label className="block text-sm text-muted-foreground">
-                Quantity (MT)
-                <input
-                  required
-                  type="number"
-                  min={0.001}
-                  step="any"
-                  className={inputCls}
-                  value={inboundForm.quantity}
-                  onChange={(e) => setInboundForm((f) => ({ ...f, quantity: e.target.value }))}
-                />
-              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-sm text-muted-foreground">
+                  Quantity
+                  <input
+                    required
+                    type="number"
+                    min={0.001}
+                    step="any"
+                    className={inputCls}
+                    value={inboundForm.quantity}
+                    onChange={(e) => setInboundForm((f) => ({ ...f, quantity: e.target.value }))}
+                  />
+                </label>
+                <label className="block text-sm text-muted-foreground">
+                  Unit
+                  <select
+                    className={inputCls}
+                    value={inboundForm.unit}
+                    onChange={(e) => setInboundForm((f) => ({ ...f, unit: e.target.value as StockUnit }))}
+                  >
+                    {STOCK_UNITS.map((u) => (
+                      <option key={u.value} value={u.value}>
+                        {u.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {(() => {
+                const product = inboundProductOptions.find((p) => String(p.id) === inboundForm.product_id);
+                const stockUnit = asStockUnit(product?.unit, inboundForm.unit);
+                const entered = Number(inboundForm.quantity);
+                if (!(entered > 0) || inboundForm.unit === stockUnit) return null;
+                const converted = convertQty(entered, inboundForm.unit, stockUnit);
+                if (converted == null) {
+                  return (
+                    <p className="text-xs text-destructive">
+                      {inboundForm.unit} cannot convert to this product&apos;s unit ({stockUnit}).
+                    </p>
+                  );
+                }
+                return (
+                  <p className="text-xs text-muted-foreground">
+                    Will add {converted.toLocaleString("en-IN", { maximumFractionDigits: 3 })} {stockUnit} to stock
+                    (product unit).
+                  </p>
+                );
+              })()}
               <label className="block text-sm text-muted-foreground">
                 Batch / lot
                 <input
@@ -854,7 +1110,7 @@ function OpsInventory() {
             <div className="mt-5 grid grid-cols-2 gap-2">
               <button
                 type="submit"
-                disabled={busy}
+                disabled={busy || !inboundForm.company_id}
                 className={cn("rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground", busy && "opacity-60")}
               >
                 {busy ? "Saving…" : "Receive"}

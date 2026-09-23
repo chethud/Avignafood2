@@ -12,6 +12,8 @@ from app.core.models import (
     SalesOrderLine,
     SalesOrderStatus,
     StockBalance,
+    User,
+    Vehicle,
 )
 from app.core.schemas import OrderDeskLine, OrderDeskOut, OutstandingDeliveryOut
 from app.inventory.routes import _default_warehouse
@@ -28,6 +30,102 @@ def on_hand(db: Session, warehouse_id: int, product_id: int) -> Decimal:
         .first()
     )
     return row.quantity if row else Decimal("0")
+
+
+def normalize_delivery_mode(mode: str | None) -> str | None:
+    if mode is None:
+        return None
+    m = (mode or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if m in ("manufacturer", "mfr", "maker"):
+        return "manufacturer"
+    if m in ("own_vehicle", "own", "fleet", "truck"):
+        return "own_vehicle"
+    if not m:
+        return None
+    return m
+
+
+def apply_delivery_plan(
+    target: Quotation | SalesOrder,
+    *,
+    delivery_mode: str | None = None,
+    planned_vehicle_id: int | None = None,
+    planned_driver_user_id: int | None = None,
+    planned_slot: str | None = None,
+    planned_on_date=None,
+) -> None:
+    mode = normalize_delivery_mode(
+        delivery_mode if delivery_mode is not None else getattr(target, "delivery_mode", None)
+    )
+    if mode is None:
+        mode = "own_vehicle"
+    target.delivery_mode = mode
+    if mode == "manufacturer":
+        target.planned_vehicle_id = None
+        target.planned_driver_user_id = None
+        target.planned_slot = None
+        target.planned_on_date = None
+        return
+    if planned_vehicle_id is not None:
+        target.planned_vehicle_id = planned_vehicle_id
+    if planned_driver_user_id is not None:
+        target.planned_driver_user_id = planned_driver_user_id
+    if planned_slot is not None:
+        target.planned_slot = planned_slot
+    if planned_on_date is not None:
+        target.planned_on_date = planned_on_date
+
+
+def delivery_labels(db: Session, so: SalesOrder) -> tuple[str | None, str | None]:
+    """Vehicle plate + driver name from dispatch/plan for invoice / desk display."""
+    load = (
+        db.query(Dispatch)
+        .filter(Dispatch.sales_order_id == so.id)
+        .order_by(Dispatch.id.desc())
+        .first()
+    )
+    vehicle = load.vehicle if load and load.vehicle else None
+    driver = load.transporter if load and load.transporter else None
+    if not vehicle and getattr(so, "planned_vehicle_id", None):
+        veh = db.query(Vehicle).filter(Vehicle.id == so.planned_vehicle_id).first()
+        vehicle = veh.plate if veh else None
+        if not driver and veh:
+            driver = veh.driver_name
+    if not driver and getattr(so, "planned_driver_user_id", None):
+        user = db.query(User).filter(User.id == so.planned_driver_user_id).first()
+        driver = user.full_name if user else None
+    if normalize_delivery_mode(getattr(so, "delivery_mode", None)) == "manufacturer":
+        return ("Manufacturer", None)
+    return vehicle, driver
+
+
+def can_raise_invoice(so: SalesOrder) -> tuple[bool, str | None]:
+    """Own-vehicle orders need Supervisor-confirmed vehicle before Accounts can invoice.
+
+    Legacy orders (delivery_mode unset) stay billable without assignment.
+    """
+    mode = normalize_delivery_mode(getattr(so, "delivery_mode", None))
+    if mode is None:
+        return True, None
+    if mode == "manufacturer":
+        return True, None
+    if (so.ops_status or "") == "pending_vehicle_confirm":
+        return False, "Supervisor must confirm or add the vehicle before invoicing"
+    if (so.ops_status or "") in (
+        "allocated",
+        "dispatched",
+        "awaiting_invoice",
+        "pending_verify",
+        "ready",
+        "shortage",
+        "procuring",
+    ):
+        if getattr(so, "planned_vehicle_id", None) or (so.ops_status or "") in ("allocated", "dispatched"):
+            return True, None
+        return False, "Supervisor must confirm or add the vehicle before invoicing"
+    if getattr(so, "planned_vehicle_id", None):
+        return True, None
+    return False, "Supervisor must confirm or add the vehicle before invoicing"
 
 
 def line_stock(db: Session, warehouse_id: int, lines) -> list[OrderDeskLine]:
@@ -72,7 +170,17 @@ def open_confirmed_from_quotation(db: Session, *, auth, quotation: Quotation) ->
         created_by_id=auth.user.id,
         status=SalesOrderStatus.DRAFT,
         ops_status="pending_approval",
+        delivery_mode=getattr(quotation, "delivery_mode", None) or "own_vehicle",
+        planned_vehicle_id=getattr(quotation, "planned_vehicle_id", None),
+        planned_driver_user_id=getattr(quotation, "planned_driver_user_id", None),
+        planned_slot=getattr(quotation, "planned_slot", None),
+        planned_on_date=getattr(quotation, "planned_on_date", None),
     )
+    if normalize_delivery_mode(so.delivery_mode) == "manufacturer":
+        so.planned_vehicle_id = None
+        so.planned_driver_user_id = None
+        so.planned_slot = None
+        so.planned_on_date = None
     db.add(so)
     db.flush()
     for ln in quotation.lines:
@@ -87,7 +195,6 @@ def open_confirmed_from_quotation(db: Session, *, auth, quotation: Quotation) ->
                 outstanding_qty=outstanding,
             )
         )
-    quotation.status  # leave caller to set CONVERTED if desired
     return so
 
 
@@ -107,6 +214,8 @@ def desk_out(db: Session, so: SalesOrder) -> OrderDeskOut:
         .order_by(Dispatch.id.desc())
         .first()
     )
+    vehicle, driver = delivery_labels(db, so)
+    ok, _ = can_raise_invoice(so)
     return OrderDeskOut(
         id=so.id,
         customer_id=so.customer_id,
@@ -125,7 +234,14 @@ def desk_out(db: Session, so: SalesOrder) -> OrderDeskOut:
         purchase_status=purchase.status if purchase else None,
         slot_date=load.slot_date if load else None,
         slot=load.slot if load else None,
-        vehicle=load.vehicle if load else None,
+        vehicle=vehicle or (load.vehicle if load else None),
+        delivery_mode=normalize_delivery_mode(getattr(so, "delivery_mode", None)) or "own_vehicle",
+        planned_vehicle_id=getattr(so, "planned_vehicle_id", None),
+        planned_driver_user_id=getattr(so, "planned_driver_user_id", None),
+        planned_slot=getattr(so, "planned_slot", None),
+        planned_on_date=getattr(so, "planned_on_date", None),
+        driver_name=driver,
+        can_invoice=ok,
     )
 
 

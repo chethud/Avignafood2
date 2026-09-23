@@ -287,7 +287,7 @@ function Invoices() {
     <>
       <PageHeader
         title="Invoices"
-        subtitle="Ready to invoice shows Super Admin–approved orders. Enter bill details, then raise the invoice. After that Sales or Supervisor can allot a driver."
+        subtitle="Ready to invoice shows orders after Supervisor confirmed/added the vehicle. Enter bill details, then raise the invoice. After that book the driver on Order desk."
       />
       {error && !selected && !pickOrder && !printInv && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
@@ -319,7 +319,7 @@ function Invoices() {
           ))}
         </Table>
         {!orders.length && (
-          <p className="mt-3 text-sm text-muted-foreground">No approved orders waiting to bill. Super Admin must approve a sales order first.</p>
+          <p className="mt-3 text-sm text-muted-foreground">No orders waiting to bill. Owner must confirm price, then Supervisor must confirm or add the vehicle.</p>
         )}
       </Panel>
 

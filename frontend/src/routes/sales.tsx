@@ -43,6 +43,7 @@ type ProductOpt = { id: number; name: string; unit: string; base_price: string |
 function orderStage(o: Order) {
   if (o.status === "cancelled") return "Declined";
   if (o.status === "draft" || o.ops_status === "pending_approval") return "Waiting Super Admin";
+  if (o.ops_status === "pending_vehicle_confirm") return "Waiting Supervisor vehicle";
   if (o.status === "confirmed" || o.ops_status === "awaiting_invoice") return "Waiting invoice";
   if (o.ops_status === "pending_verify") return "Confirm stock";
   if (o.ops_status === "ready") return "Ready to allot";
@@ -100,7 +101,7 @@ function SalesWorkspace() {
 
   return (
     <>
-      <PageHeader title="Orders" subtitle="Create → Super Admin approves → Accounts invoices → you or Supervisor allot date/window/vehicle on Order desk." />
+      <PageHeader title="Orders" subtitle="Create (optional vehicle suggestion) → Owner confirms price → Supervisor confirms or adds vehicle → Accounts invoices → book truck on Order desk." />
       <div className="mb-4 grid grid-cols-2 gap-2">
         <button
           type="button"

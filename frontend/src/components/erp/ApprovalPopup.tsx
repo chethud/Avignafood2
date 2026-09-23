@@ -278,7 +278,7 @@ export function ApprovalPopup({
         )}
         {current.kind === "order" && (
           <p className="mt-3 text-xs text-muted-foreground">
-            Approve so Accounts can enter invoice details and raise the bill. Sales or Supervisor allots the driver after that.
+            Approve so Supervisor can confirm or add the vehicle. Accounts invoices after that; driver sees the trip only once the run is booked.
           </p>
         )}
         {current.kind === "purchase" && (

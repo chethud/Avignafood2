@@ -33,6 +33,13 @@ _PRODUCT_COLS = {
 _SALES_ORDER_LINE_COLS = {
     "outstanding_qty": "NUMERIC(14, 3) DEFAULT 0",
 }
+_DELIVERY_PLAN_COLS = {
+    "delivery_mode": "VARCHAR(40)",
+    "planned_vehicle_id": "INTEGER",
+    "planned_driver_user_id": "INTEGER",
+    "planned_slot": "VARCHAR(20)",
+    "planned_on_date": "DATE",
+}
 
 
 def ensure_sales_schema(engine: Engine) -> None:
@@ -48,6 +55,8 @@ def ensure_sales_schema(engine: Engine) -> None:
         _add_cols(conn, insp, "products", _PRODUCT_COLS, tables)
         _add_cols(conn, insp, "users", _USER_COLS, tables)
         _add_cols(conn, insp, "sales_order_lines", _SALES_ORDER_LINE_COLS, tables)
+        _add_cols(conn, insp, "quotations", _DELIVERY_PLAN_COLS, tables)
+        _add_cols(conn, insp, "sales_orders", _DELIVERY_PLAN_COLS, tables)
         if "products" in tables:
             conn.execute(
                 text(

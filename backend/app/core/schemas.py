@@ -480,6 +480,11 @@ class QuotationCreate(BaseModel):
     lead_id: int | None = None
     notes: str | None = None
     lines: list[LineIn]
+    delivery_mode: str | None = None
+    planned_vehicle_id: int | None = None
+    planned_driver_user_id: int | None = None
+    planned_slot: str | None = None
+    planned_on_date: date | None = None
 
 
 class QuotationOut(ORMModel):
@@ -493,6 +498,8 @@ class QuotationOut(ORMModel):
     customer_name: str | None = None
     below_floor: bool = False
     needs_approval: bool = False
+    delivery_mode: str | None = None
+    planned_vehicle_id: int | None = None
 
 
 class SalesOrderCreate(BaseModel):
@@ -501,6 +508,11 @@ class SalesOrderCreate(BaseModel):
     warehouse_id: int | None = None
     notes: str | None = None
     lines: list[LineIn]
+    delivery_mode: str | None = None
+    planned_vehicle_id: int | None = None
+    planned_driver_user_id: int | None = None
+    planned_slot: str | None = None
+    planned_on_date: date | None = None
 
 
 class SalesOrderOut(ORMModel):
@@ -520,6 +532,12 @@ class SalesOrderOut(ORMModel):
     logistics_status: str | None = None
     vehicle: str | None = None
     eta: str | None = None
+    delivery_mode: str = "own_vehicle"
+    planned_vehicle_id: int | None = None
+    planned_driver_user_id: int | None = None
+    planned_slot: str | None = None
+    planned_on_date: date | None = None
+    driver_name: str | None = None
 
 
 class OrderDeskLine(BaseModel):
@@ -564,6 +582,13 @@ class OrderDeskOut(BaseModel):
     slot_date: date | None = None
     slot: str | None = None
     vehicle: str | None = None
+    delivery_mode: str = "own_vehicle"
+    planned_vehicle_id: int | None = None
+    planned_driver_user_id: int | None = None
+    planned_slot: str | None = None
+    planned_on_date: date | None = None
+    driver_name: str | None = None
+    can_invoice: bool = False
 
 
 class RaisePurchaseIn(BaseModel):
@@ -577,6 +602,23 @@ class AllocateDispatchIn(BaseModel):
     on_date: date
     slot: str  # morning | afternoon | evening
     vehicle_id: int | None = None
+
+
+class PlanDeliveryIn(BaseModel):
+    """Sales suggests vehicle (suggestion only until Supervisor confirms)."""
+
+    delivery_mode: str  # own_vehicle | manufacturer
+    on_date: date | None = None
+    slot: str | None = None
+    vehicle_id: int | None = None
+
+
+class ConfirmVehicleIn(BaseModel):
+    """Supervisor confirms Sales plan or adds vehicle after Owner price confirm."""
+
+    vehicle_id: int | None = None
+    on_date: date | None = None
+    slot: str | None = None
 
 
 class ReassignVehicleIn(BaseModel):

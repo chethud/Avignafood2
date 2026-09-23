@@ -98,6 +98,9 @@ function Field() {
   const [cart, setCart] = useState<Record<string, CartLine>>({});
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
   const [rateDraft, setRateDraft] = useState<Record<string, string>>({});
+  const [deliveryMode, setDeliveryMode] = useState<"own_vehicle" | "manufacturer">("own_vehicle");
+  const [planVehicleId, setPlanVehicleId] = useState<number | "">("");
+  const [fleet, setFleet] = useState<{ vehicle_id: number; name: string; plate: string; driver_name: string | null }[]>([]);
 
   useEffect(() => {
     if (!companyId) {
@@ -117,7 +120,23 @@ function Field() {
     setAcceptedOver({});
     setOverAsk(null);
     setItemSearch("");
+    setDeliveryMode("own_vehicle");
+    setPlanVehicleId("");
   }, [companyId]);
+
+  useEffect(() => {
+    if (!companyId || purpose !== "new_order") {
+      setFleet([]);
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    api<{ vehicle_id: number; name: string; plate: string; driver_name: string | null }[]>(
+      `/api/v1/vehicles/availability/all?on_date=${today}`,
+      { companyId },
+    )
+      .then((rows) => setFleet(rows))
+      .catch(() => setFleet([]));
+  }, [companyId, purpose]);
 
   useEffect(() => {
     if (purpose !== "new_order" || !companyId) {
@@ -363,6 +382,9 @@ function Field() {
               customer_id: cid,
               notes: outcome.trim() || orderNote || null,
               lines: quoteLines,
+              delivery_mode: deliveryMode,
+              planned_vehicle_id:
+                deliveryMode === "own_vehicle" && planVehicleId ? Number(planVehicleId) : null,
             }),
           });
           navigate({ to: "/sales" });
@@ -492,6 +514,61 @@ function Field() {
           <div>
             <p className="text-sm font-semibold">Order items</p>
             <p className="text-xs text-muted-foreground">Stock for this firm. Qty and the price you are giving the client.</p>
+          </div>
+          <div className="space-y-2 rounded-xl border border-border bg-background p-3">
+            <p className="text-xs font-medium text-muted-foreground">Delivery (suggestion)</p>
+            <p className="text-xs text-muted-foreground">
+              Optional. After Owner confirms price, Supervisor confirms your vehicle or adds one. Driver does not see it until then.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeliveryMode("own_vehicle");
+                }}
+                className={cn(
+                  "rounded-xl border px-3 py-2 text-sm font-medium",
+                  deliveryMode === "own_vehicle"
+                    ? "border-primary bg-primary/10 ring-2 ring-primary"
+                    : "border-border",
+                )}
+              >
+                Own vehicle
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeliveryMode("manufacturer");
+                  setPlanVehicleId("");
+                }}
+                className={cn(
+                  "rounded-xl border px-3 py-2 text-sm font-medium",
+                  deliveryMode === "manufacturer"
+                    ? "border-primary bg-primary/10 ring-2 ring-primary"
+                    : "border-border",
+                )}
+              >
+                Manufacturer
+              </button>
+            </div>
+            {deliveryMode === "own_vehicle" && (
+              <label className="block text-xs text-muted-foreground">
+                Suggest truck (optional)
+                <select
+                  className={`${fieldInput} mt-1`}
+                  value={planVehicleId}
+                  onChange={(e) => setPlanVehicleId(e.target.value ? Number(e.target.value) : "")}
+                >
+                  <option value="">Leave empty — Supervisor will add</option>
+                  {fleet.map((v) => (
+                    <option key={v.vehicle_id} value={v.vehicle_id}>
+                      {v.name} · {v.plate}
+                      {v.driver_name ? ` · ${v.driver_name}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
           {!companyId ? (
             <p className="text-sm text-muted-foreground">Pick a firm first to load inventory.</p>

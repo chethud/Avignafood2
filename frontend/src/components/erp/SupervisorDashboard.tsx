@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Link } from "@tanstack/react-router";
 import { api } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { greeting } from "@/lib/format";
@@ -48,7 +47,7 @@ export function SupervisorDashboard() {
     <>
       <PageHeader
         title={`${greeting()}, ${name}`}
-        subtitle="Order desk: confirm stock if short, then allot date + morning/afternoon/evening + vehicle. Sales can allot too — logistics only drives what you assign."
+        subtitle="After Owner confirms price: confirm or add vehicle on Order desk, then after Accounts invoices confirm stock and book the truck. Driver sees trips only after booking."
       />
 
       <div className="mb-4 flex gap-2">
@@ -78,7 +77,7 @@ export function SupervisorDashboard() {
         <Kpi
           label="To allot / stock"
           value={data ? String(data.pending_orders) : "—"}
-          meta="Ready or shortage after invoice"
+          meta="Vehicle confirm, ready, or shortage"
           tone={data && data.pending_orders > 0 ? "warn" : "good"}
         />
         <Kpi label="Invoiced" value={data ? String(data.confirmed_orders) : "—"} />
@@ -104,7 +103,7 @@ export function SupervisorDashboard() {
         <Kpi label="Warehouses" value={data ? String(data.warehouses) : "—"} />
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+      <div className="mt-6">
         <Panel title="Quiet alerts">
           <ul className="space-y-3 text-sm">
             <li className="flex items-center justify-between rounded-xl border border-border px-3 py-2.5">
@@ -126,26 +125,6 @@ export function SupervisorDashboard() {
               </Badge>
             </li>
           </ul>
-        </Panel>
-
-        <Panel title="Supervisor workflow">
-          <p className="mb-4 text-sm text-muted-foreground">
-            After Accounts invoices, stock is auto-checked. On Order desk pick date, Morning / Afternoon / Evening, and vehicle — same as Sales. Logistics then sees the assignment.
-          </p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <Link to="/ops" className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium hover:bg-primary/10">
-              Order desk — allot driver →
-            </Link>
-            <Link to="/inventory" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
-              Warehouse & stock →
-            </Link>
-            <Link to="/purchases" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
-              Purchases / inward →
-            </Link>
-            <Link to="/leads" className="rounded-xl border border-border px-4 py-3 text-sm hover:bg-secondary">
-              Sales team leads →
-            </Link>
-          </div>
         </Panel>
       </div>
         </>

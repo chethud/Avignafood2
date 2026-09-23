@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, getCompanyId } from "@/lib/api";
 import { Badge, PageHeader, Panel } from "@/components/erp/ui-bits";
 import { SLOTS, VehicleGlance, todayIso, type SlotKey, type VehicleAvail } from "@/components/erp/VehicleBoard";
+import { useMe } from "@/lib/me-context";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/ops")({
@@ -11,7 +12,7 @@ export const Route = createFileRoute("/ops")({
       { title: "Order desk · Avighna ERP" },
       {
         name: "description",
-        content: "Assign truck date + morning/afternoon/evening only for an invoiced order.",
+        content: "Supervisor confirms vehicle after Owner approve, then stock + truck booking after invoice.",
       },
     ],
   }),
@@ -47,24 +48,30 @@ type DeskOrder = {
   slot_date: string | null;
   slot: string | null;
   vehicle: string | null;
+  delivery_mode?: string;
+  planned_vehicle_id?: number | null;
+  driver_name?: string | null;
 };
 
-type Filter = "all" | "ready" | "shortage" | "procuring" | "allocated";
+type Filter = "all" | "pending_vehicle" | "ready" | "shortage" | "procuring" | "allocated";
 
 type AllotDraft = { date: string; slot: SlotKey; vehicleId: number | "" };
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
+  { id: "pending_vehicle", label: "Confirm vehicle" },
   { id: "ready", label: "Ready to book" },
   { id: "shortage", label: "Shortage" },
   { id: "procuring", label: "Procuring" },
   { id: "allocated", label: "Booked" },
 ];
 
+const CONFIRM_ROLES = new Set(["supervisor", "owner", "super_admin"]);
+
 function opsTone(status: string): "neutral" | "good" | "warn" | "bad" {
   if (status === "ready" || status === "allocated" || status === "dispatched") return "good";
   if (status === "shortage") return "bad";
-  if (status === "procuring" || status === "pending_verify") return "warn";
+  if (status === "procuring" || status === "pending_verify" || status === "pending_vehicle_confirm") return "warn";
   return "neutral";
 }
 
@@ -72,6 +79,7 @@ function opsLabel(status: string) {
   return (
     {
       pending_verify: "Confirm stock",
+      pending_vehicle_confirm: "Confirm vehicle",
       awaiting_invoice: "Waiting for invoice",
       pending_approval: "Waiting Super Admin",
       shortage: "Shortage",
@@ -88,6 +96,9 @@ function kg(v: string | number) {
 }
 
 function OrderDesk() {
+  const { me } = useMe();
+  const role = (me?.user.role || "").toLowerCase();
+  const canConfirmVehicle = CONFIRM_ROLES.has(role);
   const [rows, setRows] = useState<DeskOrder[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [error, setError] = useState("");
@@ -105,7 +116,7 @@ function OrderDesk() {
       drafts[so.id] || {
         date: so.slot_date || todayIso(),
         slot: (so.slot as SlotKey) || "morning",
-        vehicleId: fleet[0]?.vehicle_id ?? "",
+        vehicleId: so.planned_vehicle_id ?? fleet[0]?.vehicle_id ?? "",
       }
     );
   }
@@ -161,9 +172,12 @@ function OrderDesk() {
   const visible = useMemo(() => {
     if (filter === "all") {
       return rows.filter((r) =>
-        ["ready", "shortage", "procuring", "allocated", "pending_verify"].includes(r.ops_status),
+        ["ready", "shortage", "procuring", "allocated", "pending_verify", "pending_vehicle_confirm"].includes(
+          r.ops_status,
+        ),
       );
     }
+    if (filter === "pending_vehicle") return rows.filter((r) => r.ops_status === "pending_vehicle_confirm");
     if (filter === "allocated") return rows.filter((r) => r.ops_status === "allocated" || r.ops_status === "dispatched");
     if (filter === "ready") return rows.filter((r) => r.ops_status === "ready" || r.ops_status === "pending_verify");
     return rows.filter((r) => r.ops_status === filter);
@@ -172,6 +186,7 @@ function OrderDesk() {
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const r of rows) c[r.ops_status] = (c[r.ops_status] || 0) + 1;
+    c.pending_vehicle = c.pending_vehicle_confirm || 0;
     c.ready = (c.ready || 0) + (c.pending_verify || 0);
     c.allocated = (c.allocated || 0) + (c.dispatched || 0);
     return c;
@@ -195,7 +210,7 @@ function OrderDesk() {
     <>
       <PageHeader
         title="Order desk"
-        subtitle="Book a truck only for an invoiced order: pick date + Morning/Afternoon/Evening + vehicle, then Assign. You cannot book an empty window."
+        subtitle="After Owner confirms price: Supervisor confirms Sales’ vehicle or adds one → Accounts invoices → book the run when stock is ready. Driver sees the trip only after booking."
       />
       {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
@@ -204,7 +219,9 @@ function OrderDesk() {
           const n =
             f.id === "all"
               ? rows.filter((r) =>
-                  ["ready", "shortage", "procuring", "allocated", "pending_verify"].includes(r.ops_status),
+                  ["ready", "shortage", "procuring", "allocated", "pending_verify", "pending_vehicle_confirm"].includes(
+                    r.ops_status,
+                  ),
                 ).length
               : counts[f.id] || 0;
           return (
@@ -227,14 +244,14 @@ function OrderDesk() {
       <Panel title="Fleet (read only)" hint="Windows book when you Assign an order" className="mb-4">
         <VehicleGlance onDate={glanceDate} onDateChange={setGlanceDate} />
         <p className="mt-2 text-xs text-muted-foreground">
-          Free / Booked here is only a preview. To book a truck, open a <strong>Ready</strong> order below.
+          Free / Booked here is only a preview. Confirm vehicle after Owner approve; book the truck on a Ready order after invoice.
         </p>
       </Panel>
 
       {!visible.length && (
         <Panel>
           <p className="text-sm text-muted-foreground">
-            No orders ready to book. Flow: Sales creates order → Owner approves → Accounts raises invoice → order appears here as Ready (or Shortage). Then assign date + window + vehicle.
+            No orders on the desk. Flow: Sales creates (optional vehicle suggestion) → Owner confirms price → Supervisor confirms or adds vehicle → Accounts invoices → Ready → book truck → Logistics.
           </p>
           <Link to="/sales" className="mt-3 inline-block text-sm font-medium text-primary">
             Go to Sales orders →
@@ -248,6 +265,8 @@ function OrderDesk() {
           const selected = fleet.find((v) => v.vehicle_id === draft.vehicleId);
           const slotFree = selected ? selected[draft.slot] === "free" : false;
           const canBook = so.ops_status === "ready" || so.ops_status === "pending_verify";
+          const needsVehicle = so.ops_status === "pending_vehicle_confirm";
+          const hasSalesPlan = Boolean(so.planned_vehicle_id || so.vehicle);
 
           return (
             <Panel
@@ -257,6 +276,17 @@ function OrderDesk() {
             >
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Badge tone={opsTone(so.ops_status)}>{opsLabel(so.ops_status)}</Badge>
+                {so.delivery_mode === "manufacturer" ? (
+                  <Badge tone="good">Manufacturer</Badge>
+                ) : so.vehicle || so.planned_vehicle_id ? (
+                  <Badge tone={needsVehicle ? "warn" : "good"}>
+                    {so.vehicle || "Vehicle suggested"}
+                    {so.driver_name ? ` · ${so.driver_name}` : ""}
+                    {needsVehicle ? " · awaiting confirm" : ""}
+                  </Badge>
+                ) : needsVehicle ? (
+                  <Badge tone="warn">No vehicle — Supervisor must add</Badge>
+                ) : null}
                 {so.dispatch_id && (
                   <Badge tone="good">
                     {so.slot_date || ""} {so.slot || ""} {so.vehicle ? `· ${so.vehicle}` : ""}
@@ -289,6 +319,62 @@ function OrderDesk() {
                 </table>
               </div>
 
+              {needsVehicle && (
+                <div className="mt-4 space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
+                  <p className="text-sm font-medium">
+                    {hasSalesPlan ? "Confirm Sales vehicle suggestion" : "Add vehicle for this order"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Owner has confirmed the price. After you confirm, Accounts can invoice. Driver does not see this yet.
+                  </p>
+                  {!canConfirmVehicle ? (
+                    <p className="text-sm text-muted-foreground">Only Supervisor (or Owner) can confirm or add the vehicle.</p>
+                  ) : (
+                    <>
+                      <label className="block text-xs text-muted-foreground">
+                        Vehicle / driver
+                        <select
+                          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                          value={draft.vehicleId}
+                          onChange={(e) =>
+                            patchDraft(so.id, { vehicleId: e.target.value ? Number(e.target.value) : "" })
+                          }
+                        >
+                          {!fleet.length && <option value="">No vehicles</option>}
+                          {fleet.map((v) => (
+                            <option key={v.vehicle_id} value={v.vehicle_id}>
+                              {v.name} · {v.plate}
+                              {v.driver_name ? ` · ${v.driver_name}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        disabled={busy === `cv-${so.id}` || (!hasSalesPlan && !draft.vehicleId)}
+                        onClick={() =>
+                          run(`cv-${so.id}`, () =>
+                            api(`/api/v1/sales-orders/${so.id}/confirm-vehicle`, {
+                              method: "POST",
+                              body: JSON.stringify({
+                                vehicle_id: draft.vehicleId || so.planned_vehicle_id || null,
+                              }),
+                            }).then(() => undefined),
+                          )
+                        }
+                        className="w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-60 sm:w-auto"
+                      >
+                        {busy === `cv-${so.id}`
+                          ? "Saving…"
+                          : hasSalesPlan
+                            ? "Confirm vehicle → Accounts"
+                            : "Add vehicle → Accounts"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
               {so.ops_status === "pending_verify" && (
                 <div className="mt-4">
                   <button
@@ -308,7 +394,9 @@ function OrderDesk() {
 
               {so.ops_status === "shortage" && (
                 <div className="mt-4 space-y-3 rounded-xl border border-border bg-secondary/40 p-3">
-                  <p className="text-sm text-muted-foreground">Stock short — raise purchase or complete remaining after inward. Then you can book a truck.</p>
+                  <p className="text-sm text-muted-foreground">
+                    Stock short — raise purchase or complete remaining after inward. Then you can book a truck.
+                  </p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <label className="text-xs text-muted-foreground">
                       Manufacturer
@@ -398,7 +486,7 @@ function OrderDesk() {
                 <div className="mt-4 space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
                   <p className="text-sm font-medium">Book truck for this order</p>
                   <p className="text-xs text-muted-foreground">
-                    Choose date, window and vehicle. This is the only way to book a truck window.
+                    Choose date, window and vehicle. This books the run so the driver can see it.
                   </p>
                   <div className="grid gap-2 sm:grid-cols-3">
                     <label className="text-xs text-muted-foreground">
