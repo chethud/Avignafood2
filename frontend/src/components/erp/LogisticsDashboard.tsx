@@ -409,7 +409,7 @@ export function LogisticsDashboard() {
       </div>
 
       {/* Progress stepper — always first content under greeting */}
-      <div className="rounded-2xl border border-border bg-card px-2 pb-3 pt-3">
+      <div data-tour="logistics-steps" className="rounded-2xl border border-border bg-card px-2 pb-3 pt-3">
         <div className="relative h-10" aria-hidden>
           <div className="absolute left-[10%] right-[10%] top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-secondary" />
           <div
@@ -460,7 +460,7 @@ export function LogisticsDashboard() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <section className="space-y-3">
+      <section className="space-y-3" data-tour="logistics-shipments">
         <h2 className="text-sm font-medium text-muted-foreground">
           {phase === "pick"
             ? assignedTrips.length
@@ -585,6 +585,7 @@ export function LogisticsDashboard() {
       </section>
 
       <section
+        data-tour="logistics-truck"
         className={cn(
           "rounded-2xl border border-border bg-card px-4 py-4",
           phase === "deliver" && current && "cursor-pointer",

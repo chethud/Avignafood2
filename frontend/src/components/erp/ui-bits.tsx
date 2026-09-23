@@ -3,7 +3,10 @@ import { cn } from "@/lib/utils";
 
 export function PageHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
   return (
-    <header className="mb-3 flex flex-wrap items-end justify-between gap-2 sm:mb-4 sm:gap-3">
+    <header
+      data-tour="page-guide"
+      className="mb-3 flex flex-wrap items-end justify-between gap-2 sm:mb-4 sm:gap-3"
+    >
       <div className="min-w-0">
         <h1 className="text-xl font-semibold leading-tight sm:text-2xl">{title}</h1>
         {subtitle && <p className="mt-0.5 max-w-2xl text-xs text-muted-foreground sm:text-sm">{subtitle}</p>}

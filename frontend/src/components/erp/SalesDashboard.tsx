@@ -75,7 +75,7 @@ export function SalesDashboard() {
   const glance = stock.slice(0, 4);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5" data-tour="sales-home">
       <div>
         <h1 className="text-2xl font-semibold leading-tight">
           {greeting()}, {name}
@@ -85,15 +85,18 @@ export function SalesDashboard() {
 
       <Link
         to="/field"
+        data-tour="sales-log-visit"
         className="flex min-h-16 w-full items-center justify-center gap-2 rounded-2xl bg-primary text-lg font-semibold text-primary-foreground active:scale-[0.99]"
       >
         <ClipboardList className="size-6" />
         Log a visit
       </Link>
 
-      <VehicleGlance onDate={workDate} onDateChange={setWorkDate} />
+      <div data-tour="sales-vehicles">
+        <VehicleGlance onDate={workDate} onDateChange={setWorkDate} />
+      </div>
 
-      <section>
+      <section data-tour="sales-visits">
         <p className="text-sm font-medium">
           Today · {todayVisits.length} visit{todayVisits.length === 1 ? "" : "s"}
         </p>
@@ -118,7 +121,7 @@ export function SalesDashboard() {
         )}
       </section>
 
-      <section>
+      <section data-tour="sales-stock">
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium">Inventory at a glance</p>
           <Link to="/inventory" className="text-sm text-primary">

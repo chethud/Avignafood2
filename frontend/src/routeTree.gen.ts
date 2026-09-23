@@ -19,6 +19,7 @@ import { Route as CustomersRouteImport } from './routes/customers'
 import { Route as DeliveriesRouteImport } from './routes/deliveries'
 import { Route as DispatchRouteImport } from './routes/dispatch'
 import { Route as FieldRouteImport } from './routes/field'
+import { Route as GuideRouteImport } from './routes/guide'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as InvoicesRouteImport } from './routes/invoices'
@@ -83,6 +84,11 @@ const DispatchRoute = DispatchRouteImport.update({
 const FieldRoute = FieldRouteImport.update({
   id: '/field',
   path: '/field',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GuideRoute = GuideRouteImport.update({
+  id: '/guide',
+  path: '/guide',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HistoryRoute = HistoryRouteImport.update({
@@ -172,6 +178,7 @@ export interface FileRoutesByFullPath {
   '/deliveries': typeof DeliveriesRoute
   '/dispatch': typeof DispatchRoute
   '/field': typeof FieldRoute
+  '/guide': typeof GuideRoute
   '/history': typeof HistoryRoute
   '/inventory': typeof InventoryRoute
   '/invoices': typeof InvoicesRoute
@@ -199,6 +206,7 @@ export interface FileRoutesByTo {
   '/deliveries': typeof DeliveriesRoute
   '/dispatch': typeof DispatchRoute
   '/field': typeof FieldRoute
+  '/guide': typeof GuideRoute
   '/history': typeof HistoryRoute
   '/inventory': typeof InventoryRoute
   '/invoices': typeof InvoicesRoute
@@ -227,6 +235,7 @@ export interface FileRoutesById {
   '/deliveries': typeof DeliveriesRoute
   '/dispatch': typeof DispatchRoute
   '/field': typeof FieldRoute
+  '/guide': typeof GuideRoute
   '/history': typeof HistoryRoute
   '/inventory': typeof InventoryRoute
   '/invoices': typeof InvoicesRoute
@@ -256,6 +265,7 @@ export interface FileRouteTypes {
     | '/deliveries'
     | '/dispatch'
     | '/field'
+    | '/guide'
     | '/history'
     | '/inventory'
     | '/invoices'
@@ -283,6 +293,7 @@ export interface FileRouteTypes {
     | '/deliveries'
     | '/dispatch'
     | '/field'
+    | '/guide'
     | '/history'
     | '/inventory'
     | '/invoices'
@@ -310,6 +321,7 @@ export interface FileRouteTypes {
     | '/deliveries'
     | '/dispatch'
     | '/field'
+    | '/guide'
     | '/history'
     | '/inventory'
     | '/invoices'
@@ -338,6 +350,7 @@ export interface RootRouteChildren {
   DeliveriesRoute: typeof DeliveriesRoute
   DispatchRoute: typeof DispatchRoute
   FieldRoute: typeof FieldRoute
+  GuideRoute: typeof GuideRoute
   HistoryRoute: typeof HistoryRoute
   InventoryRoute: typeof InventoryRoute
   InvoicesRoute: typeof InvoicesRoute
@@ -425,6 +438,13 @@ declare module '@tanstack/react-router' {
       path: '/field'
       fullPath: '/field'
       preLoaderRoute: typeof FieldRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/guide': {
+      id: '/guide'
+      path: '/guide'
+      fullPath: '/guide'
+      preLoaderRoute: typeof GuideRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/history': {
@@ -546,6 +566,7 @@ const rootRouteChildren: RootRouteChildren = {
   DeliveriesRoute: DeliveriesRoute,
   DispatchRoute: DispatchRoute,
   FieldRoute: FieldRoute,
+  GuideRoute: GuideRoute,
   HistoryRoute: HistoryRoute,
   InventoryRoute: InventoryRoute,
   InvoicesRoute: InvoicesRoute,

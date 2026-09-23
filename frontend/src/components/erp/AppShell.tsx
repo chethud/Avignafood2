@@ -4,7 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Sparkles, Users, Handshake, MapPin, Boxes, Truck, ShoppingCart,
   ReceiptText, Wallet, BarChart3, Settings, Menu, X, Check, ChevronDown, Bell, ClipboardList,
-  ChevronLeft, Scale, Banknote, History,
+  ChevronLeft, Scale, Banknote, History, CircleHelp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCompany } from "@/lib/company-context";
@@ -15,6 +15,7 @@ import { applyBrand } from "@/lib/brand";
 import { nameInitials } from "@/lib/format";
 import { InvoiceRequestPopup, useInvoiceRequests } from "@/components/erp/InvoiceRequestPopup";
 import { usePendingApprovals } from "@/components/erp/ApprovalPopup";
+import { ProductTour } from "@/components/erp/ProductTour";
 import { Badge } from "@/components/erp/ui-bits";
 
 function ProfileAvatar({
@@ -91,7 +92,10 @@ const ownerNav: NavSection[] = [
       { to: "/analytics", label: "Analytics", icon: BarChart3 },
     ],
   },
-  { group: "Setup", items: [{ to: "/admin", label: "Administration", icon: Settings }] },
+  { group: "Setup", items: [
+    { to: "/guide", label: "Guide", icon: CircleHelp },
+    { to: "/admin", label: "Administration", icon: Settings },
+  ] },
 ];
 
 /**
@@ -118,6 +122,7 @@ const navByRole: Record<string, NavSection[]> = {
         { to: "/purchases", label: "Purchases", icon: ShoppingCart },
       ],
     },
+    { group: "Help", items: [{ to: "/guide", label: "Guide", icon: CircleHelp }] },
   ],
   sales: [
     { group: "Field", items: [{ to: "/", label: "Today", icon: LayoutDashboard }] },
@@ -131,6 +136,7 @@ const navByRole: Record<string, NavSection[]> = {
         { to: "/sales", label: "Quotes & orders", icon: Handshake },
         { to: "/ops", label: "Allot driver", icon: ClipboardList },
         { to: "/inventory", label: "Inventory", icon: Boxes },
+        { to: "/guide", label: "Guide", icon: CircleHelp },
         { to: "/profile", label: "Profile", icon: Users },
       ],
     },
@@ -144,6 +150,7 @@ const navByRole: Record<string, NavSection[]> = {
         { to: "/receivables", label: "Receivables", icon: Wallet },
         { to: "/payments", label: "Payments received", icon: Banknote },
         { to: "/clients", label: "Customers", icon: Users },
+        { to: "/guide", label: "Guide", icon: CircleHelp },
         { to: "/more", label: "More", icon: Menu },
       ],
     },
@@ -154,6 +161,7 @@ const navByRole: Record<string, NavSection[]> = {
       items: [
         { to: "/", label: "Today", icon: LayoutDashboard },
         { to: "/history", label: "History", icon: History },
+        { to: "/guide", label: "Guide", icon: CircleHelp },
         { to: "/profile", label: "Profile", icon: Users },
       ],
     },
@@ -199,6 +207,16 @@ function SalesPhoneShell({
           <p className="text-xs text-muted-foreground">On-site · phone</p>
         </div>
         <Link
+          to="/guide"
+          aria-label="Guide"
+          className={cn(
+            "flex size-11 shrink-0 items-center justify-center rounded-xl border border-border",
+            pathname === "/guide" && "border-primary bg-primary/10 text-primary",
+          )}
+        >
+          <CircleHelp className="size-5" />
+        </Link>
+        <Link
           to="/profile"
           aria-label="Profile"
           className={cn(
@@ -214,7 +232,10 @@ function SalesPhoneShell({
         </Link>
       </header>
       <main className="mx-auto max-w-md px-4 py-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))]">{children}</main>
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
+      <nav
+        data-tour="shell-nav-sales"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur"
+      >
         {SALES_TABS.map((item) => {
           const active = pathname === item.to;
           return (
@@ -232,6 +253,7 @@ function SalesPhoneShell({
           );
         })}
       </nav>
+      <ProductTour />
     </div>
   );
 }
@@ -267,6 +289,16 @@ function LogisticsPhoneShell({
           <p className="text-xs text-muted-foreground">Driver · phone</p>
         </div>
         <Link
+          to="/guide"
+          aria-label="Guide"
+          className={cn(
+            "flex size-11 shrink-0 items-center justify-center rounded-xl border border-border",
+            pathname === "/guide" && "border-primary bg-primary/10 text-primary",
+          )}
+        >
+          <CircleHelp className="size-5" />
+        </Link>
+        <Link
           to="/profile"
           aria-label="Profile"
           className={cn(
@@ -282,7 +314,10 @@ function LogisticsPhoneShell({
         </Link>
       </header>
       <main className="mx-auto max-w-md px-4 py-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))]">{children}</main>
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
+      <nav
+        data-tour="shell-nav-logistics"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur"
+      >
         {LOGISTICS_TABS.map((item) => {
           const active = pathname === item.to;
           return (
@@ -300,6 +335,7 @@ function LogisticsPhoneShell({
           );
         })}
       </nav>
+      <ProductTour />
     </div>
   );
 }
@@ -310,6 +346,7 @@ function pathAllowed(pathname: string, sections: NavSection[]): boolean {
   const paths = new Set(flattenNav(sections).map((i) => i.to));
   if (paths.has(pathname)) return true;
   if (pathname === "/profile") return true;
+  if (pathname === "/guide") return true;
   if (ACCOUNTANT_MORE.includes(pathname) && paths.has("/more")) return true;
   return false;
 }
@@ -329,7 +366,7 @@ function CompanySwitcher({ compact, hideThumb }: { compact?: boolean; hideThumb?
   const active = options.find((o) => o.id === firm);
   const showThumb = !hideThumb && Boolean(active?.logo);
   return (
-    <div className="relative">
+    <div className="relative" data-tour="shell-company">
       <button
         onClick={() => setOpen((v) => !v)}
         className={cn(
@@ -493,7 +530,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <CompanySwitcher hideThumb={hasBrandLogo} />
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-1 sm:px-4">
+      <nav data-tour="shell-nav" className="min-h-0 flex-1 overflow-y-auto px-3 py-1 sm:px-4">
         <div className="flex flex-col gap-4">
           {activeNav.map((section) => (
             <div key={section.group}>
@@ -581,7 +618,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <CompanySwitcher compact />
           </div>
           <div className="hidden min-w-0 flex-1 truncate text-sm text-muted-foreground lg:block">{firmName(firm)}</div>
-          <div className="relative">
+          <div className="relative" data-tour="shell-bell">
             <button
               type="button"
               className="relative rounded-lg p-2 hover:bg-secondary"
@@ -686,6 +723,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         waitingCount={invoiceRequests.length}
         onDismiss={dismissInvoice}
       />
+      <ProductTour />
     </div>
   );
 }

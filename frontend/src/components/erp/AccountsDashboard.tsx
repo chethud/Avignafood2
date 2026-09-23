@@ -60,7 +60,7 @@ export function AccountsDashboard() {
       />
       {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" data-tour="accounts-kpis">
         {kpis.map((c) => (
           <Link
             key={c.label}
@@ -75,7 +75,7 @@ export function AccountsDashboard() {
         ))}
       </div>
 
-      <div className="mt-6">
+      <div className="mt-6" data-tour="accounts-queue">
         <Panel title="Work queue">
           <ul className="space-y-3 text-sm sm:grid sm:grid-cols-2 sm:gap-3 sm:space-y-0">
             <li>

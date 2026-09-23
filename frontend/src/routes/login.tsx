@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Eye, EyeOff } from "lucide-react";
+import { CircleHelp, Eye, EyeOff } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { API_URL, setAuth, api } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
@@ -18,6 +18,7 @@ function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [askGuide, setAskGuide] = useState(false);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -53,12 +54,20 @@ function LoginPage() {
           localStorage.setItem("companyId", String(firms[0].companyId));
         }
       }
-      navigate({ to: "/" });
+      setAskGuide(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setLoading(false);
     }
+  }
+
+  function openGuide() {
+    navigate({ to: "/guide" });
+  }
+
+  function skipGuide() {
+    navigate({ to: "/" });
   }
 
   return (
@@ -119,6 +128,36 @@ function LoginPage() {
           {loading ? "Signing in…" : "Sign in"}
         </button>
       </form>
+
+      {askGuide && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-foreground/40 p-4 sm:items-center">
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-5 shadow-[var(--shadow-soft)]">
+            <div className="mb-3 flex size-12 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+              <CircleHelp className="size-6" />
+            </div>
+            <p className="text-lg font-semibold">Need a quick guide?</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              See every page for your role, or start a walkthrough that highlights sections on screen.
+            </p>
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={skipGuide}
+                className="min-h-12 rounded-2xl border border-border text-sm font-semibold"
+              >
+                Skip
+              </button>
+              <button
+                type="button"
+                onClick={openGuide}
+                className="min-h-12 rounded-2xl bg-primary text-sm font-semibold text-primary-foreground"
+              >
+                Open guide
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -111,6 +111,7 @@ def _add_cols(conn, insp, table: str, cols: dict[str, str], tables: set[str]) ->
     for name, ddl in cols.items():
         if name in existing:
             continue
-        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {ddl}"))
+        # SQLite has no ADD COLUMN IF NOT EXISTS; we already skip existing via insp.
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
         added.add(name)
     return added
