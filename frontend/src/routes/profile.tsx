@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Camera, X } from "lucide-react";
 import { api, clearAuth, mediaUrl } from "@/lib/api";
@@ -159,9 +159,6 @@ function Profile() {
           {email ? <p className="truncate text-sm text-muted-foreground">{email}</p> : null}
           <p className="text-xs capitalize text-muted-foreground">{me?.user.role?.replaceAll("_", " ") || "User"}</p>
           <div className="mt-1.5 flex flex-wrap gap-2">
-            <Link to="/guide" className="text-xs font-medium text-primary">
-              Open guide
-            </Link>
             <button
               type="button"
               disabled={uploading}

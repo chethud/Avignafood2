@@ -4,20 +4,18 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Sparkles, Users, Handshake, MapPin, Boxes, Truck, ShoppingCart,
   ReceiptText, Wallet, BarChart3, Settings, Menu, X, Check, ChevronDown, Bell, ClipboardList,
-  ChevronLeft, Scale, Banknote, History, CircleHelp,
+  ChevronLeft, Scale, Banknote, History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCompany } from "@/lib/company-context";
 import { firms, firmName, quietAlerts, type FirmId } from "@/lib/erp-data";
-import { getToken, mediaUrl } from "@/lib/api";
+import { getToken, mediaUrl, API_URL } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
 import { applyBrand } from "@/lib/brand";
 import { nameInitials } from "@/lib/format";
 import { InvoiceRequestPopup, useInvoiceRequests } from "@/components/erp/InvoiceRequestPopup";
 import { usePendingApprovals } from "@/components/erp/ApprovalPopup";
-import { ProductTour } from "@/components/erp/ProductTour";
 import { Badge } from "@/components/erp/ui-bits";
-import { API_URL } from "@/lib/api";
 
 const RENDER_PING_MS = 5 * 60 * 1000;
 
@@ -108,7 +106,6 @@ const ownerNav: NavSection[] = [
     ],
   },
   { group: "Setup", items: [
-    { to: "/guide", label: "Guide", icon: CircleHelp },
     { to: "/admin", label: "Administration", icon: Settings },
   ] },
 ];
@@ -137,7 +134,6 @@ const navByRole: Record<string, NavSection[]> = {
         { to: "/purchases", label: "Purchases", icon: ShoppingCart },
       ],
     },
-    { group: "Help", items: [{ to: "/guide", label: "Guide", icon: CircleHelp }] },
   ],
   sales: [
     { group: "Field", items: [{ to: "/", label: "Today", icon: LayoutDashboard }] },
@@ -151,7 +147,6 @@ const navByRole: Record<string, NavSection[]> = {
         { to: "/sales", label: "Quotes & orders", icon: Handshake },
         { to: "/ops", label: "Allot driver", icon: ClipboardList },
         { to: "/inventory", label: "Inventory", icon: Boxes },
-        { to: "/guide", label: "Guide", icon: CircleHelp },
         { to: "/profile", label: "Profile", icon: Users },
       ],
     },
@@ -165,7 +160,6 @@ const navByRole: Record<string, NavSection[]> = {
         { to: "/receivables", label: "Receivables", icon: Wallet },
         { to: "/payments", label: "Payments received", icon: Banknote },
         { to: "/clients", label: "Customers", icon: Users },
-        { to: "/guide", label: "Guide", icon: CircleHelp },
         { to: "/more", label: "More", icon: Menu },
       ],
     },
@@ -176,7 +170,6 @@ const navByRole: Record<string, NavSection[]> = {
       items: [
         { to: "/", label: "Today", icon: LayoutDashboard },
         { to: "/history", label: "History", icon: History },
-        { to: "/guide", label: "Guide", icon: CircleHelp },
         { to: "/profile", label: "Profile", icon: Users },
       ],
     },
@@ -226,16 +219,6 @@ function SalesPhoneShell({
           <p className="text-xs text-muted-foreground">On-site · phone</p>
         </div>
         <Link
-          to="/guide"
-          aria-label="Guide"
-          className={cn(
-            "flex size-11 shrink-0 items-center justify-center rounded-xl border border-border",
-            pathname === "/guide" && "border-primary bg-primary/10 text-primary",
-          )}
-        >
-          <CircleHelp className="size-5" />
-        </Link>
-        <Link
           to="/profile"
           aria-label="Profile"
           className={cn(
@@ -272,7 +255,6 @@ function SalesPhoneShell({
           );
         })}
       </nav>
-      <ProductTour />
     </div>
   );
 }
@@ -307,16 +289,6 @@ function LogisticsPhoneShell({
           <p className="truncate text-base font-semibold">{meName}</p>
           <p className="text-xs text-muted-foreground">Driver · phone</p>
         </div>
-        <Link
-          to="/guide"
-          aria-label="Guide"
-          className={cn(
-            "flex size-11 shrink-0 items-center justify-center rounded-xl border border-border",
-            pathname === "/guide" && "border-primary bg-primary/10 text-primary",
-          )}
-        >
-          <CircleHelp className="size-5" />
-        </Link>
         <Link
           to="/profile"
           aria-label="Profile"
@@ -354,7 +326,6 @@ function LogisticsPhoneShell({
           );
         })}
       </nav>
-      <ProductTour />
     </div>
   );
 }
@@ -365,7 +336,6 @@ function pathAllowed(pathname: string, sections: NavSection[]): boolean {
   const paths = new Set(flattenNav(sections).map((i) => i.to));
   if (paths.has(pathname)) return true;
   if (pathname === "/profile") return true;
-  if (pathname === "/guide") return true;
   if (ACCOUNTANT_MORE.includes(pathname) && paths.has("/more")) return true;
   return false;
 }
@@ -742,7 +712,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         waitingCount={invoiceRequests.length}
         onDismiss={dismissInvoice}
       />
-      <ProductTour />
     </div>
   );
 }

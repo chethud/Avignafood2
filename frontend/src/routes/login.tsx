@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { CircleHelp, Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { API_URL, setAuth, api } from "@/lib/api";
 import { useMe } from "@/lib/me-context";
@@ -10,14 +10,6 @@ export const Route = createFileRoute("/login")({
   component: LoginPage,
 });
 
-const DEMO_LOGINS = [
-  { role: "Sales", email: "sales@avighnya.local", password: "sales123" },
-  { role: "Accounts", email: "accounts@avighnya.local", password: "accounts123" },
-  { role: "Logistics", email: "logistics@avighnya.local", password: "logistics123" },
-  { role: "Supervisor", email: "supervisor@avighnya.local", password: "super123" },
-  { role: "Owner", email: "owner@avighnya.local", password: "owner123" },
-] as const;
-
 function LoginPage() {
   const navigate = useNavigate();
   const { refresh } = useMe();
@@ -26,7 +18,6 @@ function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [askGuide, setAskGuide] = useState(false);
 
   // Wake Render API while the login page is open (free tier sleeps)
   useEffect(() => {
@@ -54,14 +45,12 @@ function LoginPage() {
       });
       if (!res.ok) throw new Error("Invalid credentials");
       const data = await res.json();
-      // Token only first — firm scope is set from role (All companies for owner/accounts/supervisor)
       setAuth(data.access_token);
       const session = await refresh();
       if (!session) throw new Error("Could not load your account");
       const firm = applyDefaultFirmForRole(session.user.role);
       try {
         const companies = await api<{ id: number }[]>("/api/v1/companies");
-        // Fallback company id for write actions when UI is on All companies
         if (companies[0] && firm === "all") {
           localStorage.setItem("companyId", String(companies[0].id));
         } else if (companies[0] && firm !== "all") {
@@ -73,26 +62,12 @@ function LoginPage() {
           localStorage.setItem("companyId", String(firms[0].companyId));
         }
       }
-      setAskGuide(true);
+      navigate({ to: "/" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setLoading(false);
     }
-  }
-
-  function openGuide() {
-    navigate({ to: "/guide" });
-  }
-
-  function skipGuide() {
-    navigate({ to: "/" });
-  }
-
-  function fillDemo(row: (typeof DEMO_LOGINS)[number]) {
-    setEmail(row.email);
-    setPassword(row.password);
-    setError("");
   }
 
   return (
@@ -146,27 +121,6 @@ function LoginPage() {
           </span>
         </label>
 
-        <div className="mb-5 rounded-xl border border-border bg-secondary/30 px-3 py-3">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Login credentials</p>
-          <ul className="space-y-1.5">
-            {DEMO_LOGINS.map((row) => (
-              <li key={row.email}>
-                <button
-                  type="button"
-                  onClick={() => fillDemo(row)}
-                  className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-background"
-                >
-                  <span className="font-medium">{row.role}</span>
-                  <span className="truncate font-mono text-[11px] text-muted-foreground">
-                    {row.email} · {row.password}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-2 text-[11px] text-muted-foreground">Tap a role to fill email & password.</p>
-        </div>
-
         <button
           type="submit"
           disabled={loading}
@@ -175,36 +129,6 @@ function LoginPage() {
           {loading ? "Signing in…" : "Sign in"}
         </button>
       </form>
-
-      {askGuide && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-foreground/40 p-4 sm:items-center">
-          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-5 shadow-[var(--shadow-soft)]">
-            <div className="mb-3 flex size-12 items-center justify-center rounded-2xl bg-primary/15 text-primary">
-              <CircleHelp className="size-6" />
-            </div>
-            <p className="text-lg font-semibold">Need a quick guide?</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              See every page for your role, or start a walkthrough that highlights sections on screen.
-            </p>
-            <div className="mt-5 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={skipGuide}
-                className="min-h-12 rounded-2xl border border-border text-sm font-semibold"
-              >
-                Skip
-              </button>
-              <button
-                type="button"
-                onClick={openGuide}
-                className="min-h-12 rounded-2xl bg-primary text-sm font-semibold text-primary-foreground"
-              >
-                Open guide
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

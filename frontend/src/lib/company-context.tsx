@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { firms, type FirmId } from "./erp-data";
-import { getCompanyId, notifyAuthChanged, onAuthChange } from "./api";
+import { getCompanyId, notifyFirmChanged, onAuthChange, onFirmChange } from "./api";
 import { applyBrand } from "./brand";
 
 const FIRM_SCOPE_KEY = "firmScope";
@@ -35,7 +35,9 @@ export function setFirmScope(firm: FirmId, opts?: { silent?: boolean }) {
     const companyId = firms.find((x) => x.id === firm)?.companyId;
     if (companyId != null) localStorage.setItem("companyId", String(companyId));
   }
-  if (!opts?.silent) notifyAuthChanged();
+  // Firm switch must NOT notifyAuthChanged — that re-runs /auth/me with the new
+  // X-Company-Id and a 403 ("No access") was clearing the token (logout).
+  if (!opts?.silent) notifyFirmChanged();
 }
 
 /** Call after login once role is known. Always resets scope for org-wide roles. */
@@ -46,11 +48,15 @@ export function applyDefaultFirmForRole(role: string) {
   }
   // Sales / logistics stay on a concrete company
   const cid = getCompanyId();
-  const match = firms.find((f) => String(f.companyId) === cid);
-  const firm = (match?.id as FirmId) || "f1";
+  const firm = firmFromCid(cid) || "f1";
   setFirmScope(firm);
   if (!cid && firms[0]) localStorage.setItem("companyId", String(firms[0].companyId));
   return firm;
+}
+
+function firmFromCid(cid: string | null): FirmId | null {
+  if (!cid) return null;
+  return (firms.find((f) => String(f.companyId) === cid)?.id as FirmId) || null;
 }
 
 /** If org-wide role has no firmScope yet (legacy session), default to All. */
@@ -71,7 +77,12 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       applyBrand(f);
     };
     sync();
-    return onAuthChange(sync);
+    const offFirm = onFirmChange(sync);
+    const offAuth = onAuthChange(sync);
+    return () => {
+      offFirm();
+      offAuth();
+    };
   }, []);
 
   useEffect(() => {

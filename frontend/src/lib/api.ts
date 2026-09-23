@@ -37,6 +37,7 @@ export function isAllCompaniesScope(): boolean {
 }
 
 const AUTH_EVENT = "avighna-auth";
+const FIRM_EVENT = "avighna-firm";
 
 export function notifyAuthChanged() {
   if (typeof window === "undefined") return;
@@ -47,6 +48,18 @@ export function onAuthChange(handler: () => void) {
   if (typeof window === "undefined") return () => {};
   window.addEventListener(AUTH_EVENT, handler);
   return () => window.removeEventListener(AUTH_EVENT, handler);
+}
+
+/** Firm/company scope changed — does not re-validate the session. */
+export function notifyFirmChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(FIRM_EVENT));
+}
+
+export function onFirmChange(handler: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(FIRM_EVENT, handler);
+  return () => window.removeEventListener(FIRM_EVENT, handler);
 }
 
 export function setAuth(token: string, companyId?: number) {
@@ -70,19 +83,22 @@ export function mediaUrl(path: string | null | undefined): string {
   return path;
 }
 
-type ApiOptions = RequestInit & { companyId?: number | string };
+type ApiOptions = RequestInit & { companyId?: number | string | null };
 
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const { companyId: companyOverride, ...init } = options;
   const headers = new Headers(init.headers || {});
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
+  // Explicit null/"" → omit company header (session endpoints like /auth/me)
   const companyId =
-    companyOverride != null
-      ? String(companyOverride)
-      : isAllCompaniesScope()
-        ? null
-        : getCompanyId();
+    companyOverride === null || companyOverride === ""
+      ? null
+      : companyOverride != null
+        ? String(companyOverride)
+        : isAllCompaniesScope()
+          ? null
+          : getCompanyId();
   if (companyId) headers.set("X-Company-Id", companyId);
   if (init.body && !(init.body instanceof URLSearchParams) && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");

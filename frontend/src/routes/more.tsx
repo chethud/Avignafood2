@@ -47,7 +47,6 @@ function More() {
 
 function AccountsMore() {
   const links = [
-    { to: "/guide", title: "Guide", hint: "How Accounts works — invoice, collect, credit" },
     { to: "/collection", title: "Collections", hint: "Overdue follow-up, call / WhatsApp, promised date" },
     { to: "/credit", title: "Credit control", hint: "Limit, exposure, credit/debit notes, breach alerts" },
     { to: "/reports", title: "Reports", hint: "Ageing, collections, cost of delay, Excel export" },
