@@ -316,6 +316,9 @@ function OpsInventory() {
   const [inboundProducts, setInboundProducts] = useState<Product[]>([]);
   const [inboundWarehouses, setInboundWarehouses] = useState<Warehouse[]>([]);
   const [inboundCatalogLoading, setInboundCatalogLoading] = useState(false);
+  const [q, setQ] = useState("");
+  const [moveF, setMoveF] = useState("all");
+  const [whF, setWhF] = useState("all");
 
   const [productForm, setProductForm] = useState({
     company_id: "",

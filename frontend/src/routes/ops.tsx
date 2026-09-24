@@ -54,11 +54,16 @@ type DeskOrder = {
   delivery_mode?: string;
   planned_vehicle_id?: number | null;
   driver_name?: string | null;
+  can_invoice?: boolean;
 };
 
 type Filter = "all" | "pending_vehicle" | "ready" | "shortage" | "procuring" | "allocated";
 
-type AllotDraft = { date: string; slot: SlotKey | ""; vehicleId: number | "" };
+type DriverOpt = { id: number; full_name: string; phone: string | null; email: string };
+
+type AllotDraft = { date: string; slot: SlotKey | ""; vehicleId: number | ""; driverUserId: number | "" };
+
+const EMPTY_ALLOT: AllotDraft = { date: "", slot: "", vehicleId: "", driverUserId: "" };
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
@@ -103,10 +108,12 @@ function OrderDesk() {
   const { me } = useMe();
   const role = (me?.user.role || "").toLowerCase();
   const canConfirmVehicle = CONFIRM_ROLES.has(role);
+  const canAllot = role === "sales" || role === "supervisor" || role === "owner" || role === "super_admin";
   const [rows, setRows] = useState<DeskOrder[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [glanceDate, setGlanceDate] = useState(todayIso());
   const [fleet, setFleet] = useState<VehicleAvail[]>([]);
   const [drivers, setDrivers] = useState<DriverOpt[]>([]);
   const [drafts, setDrafts] = useState<Record<number, AllotDraft>>({});
@@ -116,22 +123,12 @@ function OrderDesk() {
   const [receiveMaker, setReceiveMaker] = useState("");
 
   function draftFor(so: DeskOrder): AllotDraft {
-    return (
-      drafts[so.id] || {
-        date: "",
-        slot: "",
-        vehicleId: "",
-      }
-    );
+    return drafts[so.id] || EMPTY_ALLOT;
   }
 
   function patchDraft(soId: number, patch: Partial<AllotDraft>) {
     setDrafts((prev) => {
-      const base = prev[soId] || {
-        date: "",
-        slot: "" as const,
-        vehicleId: "" as const,
-      };
+      const base = prev[soId] || EMPTY_ALLOT;
       return { ...prev, [soId]: { ...base, ...patch } };
     });
   }
@@ -282,12 +279,13 @@ function OrderDesk() {
         {visible.map((so) => {
           const draft = draftFor(so);
           const selected = fleet.find((v) => v.vehicle_id === draft.vehicleId);
+          const selectedDriver = drivers.find((d) => d.id === draft.driverUserId);
           const slotFree =
             selected && draft.slot ? selected[draft.slot] === "free" : false;
           const canBook = so.ops_status === "ready" || so.ops_status === "pending_verify";
           const needsVehicle = so.ops_status === "pending_vehicle_confirm";
           const hasSalesPlan = Boolean(so.planned_vehicle_id || so.vehicle);
-          const allotReady = Boolean(draft.date && draft.slot && draft.vehicleId);
+          const allotReady = Boolean(draft.date && draft.slot && draft.vehicleId && draft.driverUserId);
 
           return (
             <Panel
@@ -592,7 +590,7 @@ function OrderDesk() {
                           draft.slot &&
                           fleet.map((v) => (
                             <option key={v.vehicle_id} value={v.vehicle_id}>
-                              {v.name} · {v.plate} · {v[draft.slot]}
+                              {v.name} · {v.plate} · {v[draft.slot as SlotKey]}
                             </option>
                           ))}
                       </select>

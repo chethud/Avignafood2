@@ -26,7 +26,7 @@ function Deliveries() {
   const [outcome, setOutcome] = useState<"delivered" | "partial" | "failed">("delivered");
   const [qty, setQty] = useState("");
   const [receiver, setReceiver] = useState("");
-  const [reason, setReason] = useState(FAIL_REASONS[0]);
+  const [reason, setReason] = useState<(typeof FAIL_REASONS)[number]>(FAIL_REASONS[0]);
   const [remarks, setRemarks] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -226,7 +226,7 @@ function Deliveries() {
                 <select
                   className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2"
                   value={reason}
-                  onChange={(e) => setReason(e.target.value)}
+                  onChange={(e) => setReason(e.target.value as (typeof FAIL_REASONS)[number])}
                 >
                   {FAIL_REASONS.map((r) => (
                     <option key={r}>{r}</option>

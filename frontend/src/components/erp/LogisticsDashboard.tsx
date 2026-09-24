@@ -57,7 +57,7 @@ export function LogisticsDashboard() {
   const [outcome, setOutcome] = useState<"delivered" | "partial" | "failed">("delivered");
   const [qty, setQty] = useState("");
   const [receiver, setReceiver] = useState("");
-  const [reason, setReason] = useState(FAIL_REASONS[0]);
+  const [reason, setReason] = useState<(typeof FAIL_REASONS)[number]>(FAIL_REASONS[0]);
   const [remarks, setRemarks] = useState("");
   const [photo, setPhoto] = useState("");
   const [ret, setRet] = useState(false);
@@ -805,7 +805,7 @@ export function LogisticsDashboard() {
                         className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2"
                         value={reason}
                         onChange={(e) => {
-                          setReason(e.target.value);
+                          setReason(e.target.value as (typeof FAIL_REASONS)[number]);
                           setPhoto("");
                         }}
                       >

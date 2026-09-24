@@ -39,6 +39,13 @@ type CatalogItem = {
 
 type CartLine = { qty: number; give: number | null };
 
+type SlotKey = "morning" | "afternoon" | "evening";
+type DriverOpt = { id: number; full_name: string; phone: string | null };
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
@@ -90,8 +97,12 @@ function Field() {
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
   const [rateDraft, setRateDraft] = useState<Record<string, string>>({});
   const [deliveryMode, setDeliveryMode] = useState<"own_vehicle" | "manufacturer">("own_vehicle");
+  const [planDate, setPlanDate] = useState(todayIso);
+  const [planSlot, setPlanSlot] = useState<"" | SlotKey>("");
   const [planVehicleId, setPlanVehicleId] = useState<number | "">("");
+  const [planDriverId, setPlanDriverId] = useState<number | "">("");
   const [fleet, setFleet] = useState<{ vehicle_id: number; name: string; plate: string; driver_name: string | null }[]>([]);
+  const [drivers, setDrivers] = useState<DriverOpt[]>([]);
 
   useEffect(() => {
     if (!companyId) {
@@ -112,22 +123,36 @@ function Field() {
     setOverAsk(null);
     setItemSearch("");
     setDeliveryMode("own_vehicle");
+    setPlanDate(todayIso());
+    setPlanSlot("");
     setPlanVehicleId("");
+    setPlanDriverId("");
   }, [companyId]);
 
   useEffect(() => {
-    if (!companyId || purpose !== "new_order") {
+    if (!companyId) {
+      setDrivers([]);
+      return;
+    }
+    api<DriverOpt[]>("/api/v1/vehicles/drivers", { companyId })
+      .then((rows) => setDrivers(rows))
+      .catch(() => setDrivers([]));
+  }, [companyId]);
+
+  useEffect(() => {
+    if (!companyId || purpose !== "new_order" || deliveryMode !== "own_vehicle") {
       setFleet([]);
       return;
     }
-    const today = new Date().toISOString().slice(0, 10);
+    const onDate = planDate || todayIso();
+    const slotQ = planSlot ? `&slot=${planSlot}` : "";
     api<{ vehicle_id: number; name: string; plate: string; driver_name: string | null }[]>(
-      `/api/v1/vehicles/availability/all?on_date=${today}`,
+      `/api/v1/vehicles/availability/all?on_date=${onDate}${slotQ}`,
       { companyId },
     )
       .then((rows) => setFleet(rows))
       .catch(() => setFleet([]));
-  }, [companyId, purpose]);
+  }, [companyId, purpose, deliveryMode, planDate, planSlot]);
 
   useEffect(() => {
     if (purpose !== "new_order" || !companyId) {
@@ -374,6 +399,8 @@ function Field() {
               delivery_mode: deliveryMode,
               planned_vehicle_id:
                 deliveryMode === "own_vehicle" && planVehicleId ? Number(planVehicleId) : null,
+              planned_driver_user_id:
+                deliveryMode === "own_vehicle" && planDriverId ? Number(planDriverId) : null,
             }),
           });
           navigate({ to: "/sales" });

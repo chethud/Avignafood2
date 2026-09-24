@@ -1,5 +1,5 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, mediaUrl } from "@/lib/api";
 import { money, waHref } from "@/lib/format";
 import { firms, firmLabelByCompanyId } from "@/lib/erp-data";
@@ -20,6 +20,20 @@ export const Route = createFileRoute("/invoices")({
   }),
   component: Invoices,
 });
+
+type Billable = {
+  dispatch_id: number;
+  company_id?: number;
+  customer_name: string;
+  product: string;
+  quantity: string | number;
+  dispatch_status: string;
+  vehicle: string | null;
+  lr: string | null;
+  invoiced: boolean;
+  can_invoice: boolean;
+  sales_order_id?: number | null;
+};
 
 type BillableOrder = {
   sales_order_id: number;
@@ -329,8 +343,8 @@ function Invoices() {
       firms.find((f) => f.companyId === detail.company_id) ||
       firms.find((f) => f.id === firm) ||
       company;
-    let name = firmMeta?.name;
-    let gst = firmMeta?.gst ?? null;
+    let name: string | undefined = firmMeta?.name;
+    let gst: string | null = firmMeta?.gst ?? null;
     let logoUrl: string | null = firmMeta && "logo" in firmMeta ? firmMeta.logo : null;
     try {
       type Co = {
@@ -370,6 +384,13 @@ function Invoices() {
     } finally {
       setPdfBusy(false);
     }
+  }
+
+  async function shareInvoiceWhatsApp(row: InvoiceRow) {
+    const text = `Invoice ${row.number} for ${row.customer_name || "customer"} · ${money(row.total)} · due ${row.due_date || "—"}.`;
+    const base = row.phone ? waHref(row.phone) : "https://wa.me/";
+    window.open(`${base}?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer");
+    await sendInvoice(row, "whatsapp");
   }
 
   async function downloadInvoicePdf(row: InvoiceRow) {
@@ -700,10 +721,6 @@ function Invoices() {
               <Td>
                 {b.invoiced ? (
                   <Badge tone="good">Invoiced</Badge>
-                ) : b.can_invoice ? (
-                  <button type="button" className="text-sm text-primary hover:underline" onClick={() => setSelected(b)}>
-                    Invoice now
-                  </button>
                 ) : (
                   <span className="text-xs text-muted-foreground">Raise from the order queue</span>
                 )}
@@ -800,44 +817,6 @@ function Invoices() {
         </Table>
         {!visible.length && <p className="mt-3 text-sm text-muted-foreground">No invoices match these filters.</p>}
       </Panel>
-
-      {printInv && pdfUrl && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-          <button type="button" className="absolute inset-0 bg-foreground/40" aria-label="Close" onClick={() => setSelected(null)} />
-          <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto rounded-t-2xl border border-border bg-card p-5 sm:max-w-md sm:rounded-2xl">
-            <h2 className="text-lg font-semibold">Generate invoice</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Order details for Tally / GST bill. This ERP only raises the invoice.</p>
-            <dl className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Customer</dt><dd className="font-medium">{selected.customer_name}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Product</dt><dd>{selected.product}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Quantity</dt><dd className="tabular-nums">{Number(selected.quantity)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Rate</dt><dd className="tabular-nums">{money(selected.unit_price)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Est. total (incl. GST)</dt><dd className="tabular-nums font-medium">{money(selected.estimated_total)}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Dispatch stage</dt><dd>{selected.dispatch_status}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Vehicle</dt><dd>{selected.vehicle || "—"}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">LR</dt><dd>{selected.lr || "—"}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">ETA</dt><dd>{selected.eta || "—"}</dd></div>
-              {selected.notes && (
-                <div><dt className="text-muted-foreground">Notes</dt><dd className="mt-0.5">{selected.notes}</dd></div>
-              )}
-            </dl>
-            {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-            <div className="mt-5 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void generate()}
-                className="rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
-              >
-                {busy ? "Creating…" : "Generate invoice"}
-              </button>
-              <button type="button" onClick={() => setSelected(null)} className="rounded-lg border border-border py-2.5 text-sm">
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {pickOrder && draft && (
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
